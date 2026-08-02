@@ -1,0 +1,14 @@
+# Sekrety - klucz podpisu i sekret sesji
+.env
+
+# Dane biblioteki: baza i pliki STL
+data/
+
+# Srodowisko i smieci
+.venv/
+__pycache__/
+*.pyc
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
