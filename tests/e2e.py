@@ -28,12 +28,37 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+# Ten sam sekret dostanie serwer w podprocesie. Dzieki temu test moze sam
+# zlozyc poprawny token pobrania i sprawdzic, jak serwer traktuje termin waznosci.
+SECRET = "0" * 64
+os.environ["STL_SECRET_KEY"] = SECRET
+
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey  # noqa: E402
+
+from app import security as app_security  # noqa: E402
 
 ADMIN_EMAIL = "admin@example.com"
 ADMIN_PASSWORD = "bardzo-dlugie-haslo-testowe"
 PORT = 8731
 BASE = "http://127.0.0.1:{}".format(PORT)
+
+ASCII_STL = b"""solid plytka
+  facet normal 0 0 1
+    outer loop
+      vertex 0 0 0
+      vertex 10 0 0
+      vertex 10 10 0
+    endloop
+  endfacet
+  facet normal 0 0 1
+    outer loop
+      vertex 0 0 0
+      vertex 10 10 0
+      vertex 0 10 0
+    endloop
+  endfacet
+endsolid plytka
+"""
 
 passed = 0
 failed = 0
@@ -390,6 +415,79 @@ def main() -> int:
 
         status, _ = anon.call("GET", "/api/download/1?token=" + "A" * 200, raw=False)
         check(status == 403, "smieciowy token nie wywala serwera")
+
+        print("\n[11] Plik w formacie ASCII STL")
+        status, ascii_up = admin.upload(slug, "plytka.stl", ASCII_STL)
+        check(status == 200 and ascii_up["triangles"] == 2, "ASCII STL przyjety i policzony")
+        sign_all_pending(admin, private, key_id, "test-biblioteka")
+        status, ascii_grant = user.call("POST", "/api/files/{}/grant".format(ascii_up["file_id"]))
+        status, ascii_payload, _ = user.call("GET", ascii_grant["url"], raw=True)
+        check(status == 200 and ascii_payload == ASCII_STL, "ASCII STL wydany bez zmian w bajtach")
+
+        print("\n[12] Deduplikacja i usuwanie plikow")
+        status, other_model = admin.call("POST", "/api/admin/models", {"title": "Drugi model"})
+        shared_bytes = cube_stl(5.0)
+        status, copy_a = admin.upload(slug, "wspolny.stl", shared_bytes)
+        status, copy_b = admin.upload(other_model["slug"], "wspolny.stl", shared_bytes)
+        check(copy_b["deduplicated"] is True, "ta sama tresc wgrana drugi raz nie zajmuje miejsca dwa razy")
+        check(copy_a["sha256"] == copy_b["sha256"], "obie pozycje wskazuja te sama tresc")
+        sign_all_pending(admin, private, key_id, "test-biblioteka")
+
+        status, _ = admin.call("DELETE", "/api/admin/files/{}".format(copy_a["file_id"]))
+        check(status == 200, "pierwsza pozycja usunieta")
+        status, grant_b = user.call("POST", "/api/files/{}/grant".format(copy_b["file_id"]))
+        status, body_b, _ = user.call("GET", grant_b["url"], raw=True)
+        check(status == 200 and hashlib.sha256(body_b).hexdigest() == copy_b["sha256"],
+              "usuniecie jednej pozycji nie skasowalo tresci wspoldzielonej z druga")
+
+        print("\n[13] Model nieopublikowany")
+        status, draft = admin.call("POST", "/api/admin/models", {
+            "title": "Szkic roboczy", "is_published": False
+        })
+        status, listing = anon.call("GET", "/api/models")
+        check(draft["slug"] not in [m["slug"] for m in listing["models"]],
+              "szkic nie pojawia sie w katalogu")
+        status, _ = anon.call("GET", "/api/models/{}".format(draft["slug"]))
+        check(status == 404, "anonim nie otworzy szkicu po adresie")
+
+        print("\n[14] Termin waznosci linku i sciezka poza magazynem")
+        # Test zna sekret serwera, wiec sklada wlasne tokeny. Najpierw kontrola:
+        # swiezy token musi dzialac, inaczej ponizszy wynik nic by nie dowodzil.
+        fresh = app_security.make_token(
+            {"fid": copy_b["file_id"], "uid": 2, "sha": copy_b["sha256"], "n": "kontrola"},
+            300, "download")
+        status, _, _ = user.call(
+            "GET", "/api/download/{}?token={}".format(copy_b["file_id"], fresh), raw=True)
+        check(status == 200, "token zlozony sekretem serwera dziala (kontrola testu)")
+
+        stale = app_security.make_token(
+            {"fid": copy_b["file_id"], "uid": 2, "sha": copy_b["sha256"], "n": "przeterminowany"},
+            -60, "download")
+        status, _, _ = user.call(
+            "GET", "/api/download/{}?token={}".format(copy_b["file_id"], stale), raw=True)
+        check(status == 403, "ten sam token po terminie waznosci odrzucony")
+
+        # Napastnik z dostepem do bazy kieruje wpis poza katalog magazynu.
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("UPDATE files SET storage_path = ? WHERE id = ?",
+                     ("../../../../etc/hosts", copy_b["file_id"]))
+        conn.commit()
+        conn.close()
+        status, grant_evil = user.call("POST", "/api/files/{}/grant".format(copy_b["file_id"]))
+        if status == 200:
+            status, _, _ = user.call("GET", grant_evil["url"], raw=True)
+        check(status == 409, "sciezka wychodzaca poza magazyn zablokowana")
+
+        print("\n[15] Limit prob logowania")
+        attacker = Client(BASE)
+        codes = []
+        for attempt in range(11):
+            code, _ = attacker.call("POST", "/api/auth/login", {
+                "email": "ofiara@example.com", "password": "zgaduje-haslo-{}".format(attempt)
+            })
+            codes.append(code)
+        check(codes[:10] == [401] * 10, "pierwsze 10 prob to zwykle odmowy")
+        check(codes[10] == 429, "11. proba zablokowana limitem")
 
     finally:
         server.terminate()

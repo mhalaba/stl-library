@@ -24,8 +24,21 @@ app = FastAPI(title="Biblioteka STL", docs_url=None, redoc_url=None, openapi_url
 # --- Pomocnicze --------------------------------------------------------------
 
 
+# Litery, ktore nie rozkladaja sie w NFKD na "podstawa + znak diakrytyczny".
+# Bez tej mapy "kolo" wyszloby jako "koo", bo samo 'l' zniknieloby przy
+# konwersji do ASCII. Pozostale polskie znaki (a, c, e, n, o, s, z) NFKD
+# obsluguje poprawnie.
+TRANSLITERATION = str.maketrans({
+    "ł": "l", "Ł": "L",
+    "ø": "o", "Ø": "O",
+    "đ": "d", "Đ": "D",
+    "æ": "ae", "Æ": "AE",
+    "ß": "ss",
+})
+
+
 def slugify(text: str) -> str:
-    normalized = unicodedata.normalize("NFKD", text)
+    normalized = unicodedata.normalize("NFKD", text.translate(TRANSLITERATION))
     ascii_text = normalized.encode("ascii", "ignore").decode("ascii").lower()
     slug = re.sub(r"[^a-z0-9]+", "-", ascii_text).strip("-")
     return slug or "model-{}".format(secrets.token_hex(4))

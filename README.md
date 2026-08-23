@@ -164,18 +164,30 @@ pod crona:
 ## Testy
 
 ```bash
-./.venv/bin/python tests/e2e.py
+./.venv/bin/python tests/unit.py   # 72 testy, bez serwera
+./.venv/bin/python tests/e2e.py    # 47 testów na prawdziwym serwerze
 ```
 
-34 testy na prawdziwym serwerze. Poza podstawami (logowanie, uprawnienia, CSRF, walidacja
-STL) test odgrywa rolę napastnika i sprawdza dwa scenariusze podmiany:
+Obydwa zestawy chodzą w [GitHub Actions](.github/workflows/tests.yml) przy każdym pushu,
+na Pythonie 3.9 i 3.13, razem z kontrolą, czy do repozytorium nie trafił sekret.
+
+**`tests/unit.py`** bierze się za rzeczy trudne do wywołania przez HTTP: token podpisany
+do innego celu, manifest z przestawionymi kluczami, ścieżka wychodząca poza magazyn,
+binarny STL z zawyżoną liczbą trójkątów w nagłówku, podpis obcym kluczem.
+
+**`tests/e2e.py`** podnosi prawdziwy serwer w trybie offline i odgrywa rolę napastnika.
+Dwa scenariusze podmiany pliku:
 
 1. **podmiana pliku na dysku** → serwer odmawia wydania, plik trafia do kwarantanny;
 2. **podmiana pliku + poprawienie sumy kontrolnej i rozmiaru w bazie danych** → zatrzymana
    na niezgodności podpisanego manifestu, mimo że baza „wygląda" poprawnie.
 
-Dodatkowo sprawdza, że `verify_stl.py` wyłapuje podmianę u użytkownika oraz że wbudowana
-implementacja Ed25519 daje ten sam wynik co biblioteka `cryptography`.
+Poza tym: wygasły link do pobrania (test zna sekret serwera, więc składa własne tokeny —
+z kontrolą, że świeży token *działa*, żeby wynik cokolwiek dowodził), przeklejenie tokenu
+pod inny plik, wpis w bazie kierujący poza katalog magazynu, limit prób logowania,
+deduplikacja treści przy usuwaniu, model nieopublikowany, pliki ASCII STL oraz to, że
+`verify_stl.py` wyłapuje podmianę u użytkownika, a jego wbudowana implementacja Ed25519
+daje ten sam wynik co biblioteka `cryptography`.
 
 ---
 
