@@ -1,5 +1,5 @@
-"""Warstwa dostepu do SQLite. Kazde zapytanie idzie przez parametry - zero
-sklejania SQL-a ze stringow.
+"""SQLite access layer. Every query goes through parameters - no SQL is built
+by string concatenation.
 """
 
 import sqlite3
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS models (
     slug         TEXT    NOT NULL UNIQUE,
     title        TEXT    NOT NULL,
     description  TEXT    NOT NULL DEFAULT '',
-    category     TEXT    NOT NULL DEFAULT 'inne',
+    category     TEXT    NOT NULL DEFAULT 'other',
     license      TEXT    NOT NULL DEFAULT 'CC BY-NC 4.0',
     is_published INTEGER NOT NULL DEFAULT 1,
     created_at   INTEGER NOT NULL,
@@ -35,9 +35,9 @@ CREATE TABLE IF NOT EXISTS models (
 );
 
 -- status:
---   pending      - plik wgrany, czeka na podpis (tryb offline)
---   signed       - manifest podpisany kluczem Ed25519, plik do pobrania
---   quarantined  - weryfikacja nie przeszla, plik zablokowany
+--   pending      - uploaded, waiting for a signature (offline mode)
+--   signed       - manifest signed with the Ed25519 key, file downloadable
+--   quarantined  - a check failed, the file is blocked
 CREATE TABLE IF NOT EXISTS files (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     model_id      INTEGER NOT NULL REFERENCES models(id) ON DELETE CASCADE,
@@ -129,7 +129,7 @@ def query_one(sql: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
 
 
 def execute(sql: str, params: tuple = ()) -> int:
-    """Zwraca lastrowid."""
+    """Returns lastrowid."""
     with cursor(commit=True) as cur:
         cur.execute(sql, params)
         return cur.lastrowid

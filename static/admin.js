@@ -1,13 +1,16 @@
-/* Panel administratora: dodawanie modeli, wgrywanie plików STL, audyt. */
+/* Administrator panel: models, uploads, integrity audit, event log. */
 
 (function () {
   "use strict";
 
-  const view = document.getElementById("view");
-  const authBox = document.getElementById("auth-box");
+  var t = window.I18N.t;
+  var LOCALE = window.I18N.lang() === "pl" ? "pl-PL" : "en-GB";
+
+  var view = document.getElementById("view");
+  var authBox = document.getElementById("auth-box");
 
   function el(tag, attrs, children) {
-    const node = document.createElement(tag);
+    var node = document.createElement(tag);
     if (attrs) {
       Object.keys(attrs).forEach(function (key) {
         if (key === "class") node.className = attrs[key];
@@ -25,38 +28,38 @@
   function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
 
   function csrfToken() {
-    const match = document.cookie.match(/(?:^|;\s*)stl_csrf=([^;]+)/);
+    var match = document.cookie.match(/(?:^|;\s*)stl_csrf=([^;]+)/);
     return match ? decodeURIComponent(match[1]) : "";
   }
 
   async function api(path, options) {
-    const opts = options || {};
-    const headers = Object.assign({ Accept: "application/json" }, opts.headers || {});
+    var opts = options || {};
+    var headers = Object.assign({ Accept: "application/json" }, opts.headers || {});
     if (opts.method && opts.method !== "GET") headers["X-CSRF-Token"] = csrfToken();
     if (opts.json !== undefined) {
       headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(opts.json);
     }
-    const response = await fetch(path, {
+    var response = await fetch(path, {
       method: opts.method || "GET",
       headers: headers,
       body: opts.body,
       credentials: "same-origin"
     });
-    const text = await response.text();
-    const data = text ? JSON.parse(text) : {};
+    var text = await response.text();
+    var data = text ? JSON.parse(text) : {};
     if (!response.ok) throw new Error(errorText(data, response.status));
     return data;
   }
 
-  /* FastAPI przy błędach walidacji zwraca `detail` jako listę obiektów. */
+  /* FastAPI returns `detail` as a list of objects for validation errors. */
   function errorText(data, status) {
-    const detail = data && data.detail;
+    var detail = data && data.detail;
     if (typeof detail === "string") return detail;
     if (Array.isArray(detail)) {
       return detail.map(function (item) { return item.msg || String(item); }).join("; ");
     }
-    return "Błąd " + status;
+    return t("error.generic", { status: status });
   }
 
   function stat(num, label) {
@@ -68,35 +71,35 @@
 
   async function render() {
     clear(view);
+    clear(authBox);
+    authBox.appendChild(window.I18N.switcher());
 
-    let stats;
+    var stats;
     try {
       stats = await api("/api/admin/stats");
     } catch (err) {
       view.appendChild(el("div", { class: "empty" }, [
         el("div", { text: err.message }),
-        el("div", {}, [el("a", { href: "/", text: "← wróć do katalogu i zaloguj się jako administrator" })])
+        el("div", {}, [el("a", { href: "/", text: t("admin.signInFirst") })])
       ]));
       return;
     }
 
-    authBox.appendChild(el("a", { href: "/", class: "tag", text: "katalog" }));
+    authBox.appendChild(el("a", { href: "/", class: "tag", text: t("nav.catalogue") }));
 
     view.appendChild(el("div", { class: "notice" }, [
-      el("strong", { text: "Tryb podpisywania: " + stats.signing_mode + ". " }),
-      stats.signing_mode === "online"
-        ? "Klucz prywatny leży na serwerze — wygodne, ale włamanie na serwer pozwoliłoby podpisać podmieniony plik. Do produkcji przełącz się na tryb offline (README, sekcja „Tryb offline”)."
-        : "Klucz prywatny jest poza serwerem. Wgrane pliki czekają w stanie „pending”, dopóki nie podpiszesz ich narzędziem tools/sign_pending.py.",
-      stats.key_id ? el("div", { text: "Aktywny klucz: " + stats.key_id }) : null
+      el("strong", { text: t("admin.mode", { mode: stats.signing_mode }) }),
+      stats.signing_mode === "online" ? t("admin.modeOnline") : t("admin.modeOffline"),
+      stats.key_id ? el("div", { text: t("admin.activeKey", { id: stats.key_id }) }) : null
     ]));
 
     view.appendChild(el("div", { class: "admin-grid" }, [
-      stat(stats.users, "użytkowników"),
-      stat(stats.models, "modeli"),
-      stat(stats.files_signed, "plików podpisanych"),
-      stat(stats.files_pending, "czeka na podpis"),
-      stat(stats.files_quarantined, "w kwarantannie"),
-      stat(stats.downloads_24h, "pobrań / 24h")
+      stat(stats.users, t("admin.stat.users")),
+      stat(stats.models, t("admin.stat.models")),
+      stat(stats.files_signed, t("admin.stat.signed")),
+      stat(stats.files_pending, t("admin.stat.pending")),
+      stat(stats.files_quarantined, t("admin.stat.quarantined")),
+      stat(stats.downloads_24h, t("admin.stat.downloads"))
     ]));
 
     view.appendChild(newModelPanel());
@@ -106,43 +109,43 @@
   }
 
   function newModelPanel() {
-    const title = el("input", { type: "text", placeholder: "np. Uchwyt na słuchawki" });
-    const category = el("input", { type: "text", placeholder: "np. akcesoria" });
-    const license = el("input", { type: "text", value: "CC BY-NC 4.0" });
-    const description = el("textarea", { placeholder: "Krótki opis, parametry druku, zalecany materiał..." });
-    const status = el("div", { class: "status-line" });
+    var title = el("input", { type: "text", placeholder: t("admin.placeholder.title") });
+    var category = el("input", { type: "text", placeholder: t("admin.placeholder.category") });
+    var license = el("input", { type: "text", value: "CC BY-NC 4.0" });
+    var description = el("textarea", { placeholder: t("admin.placeholder.description") });
+    var status = el("div", { class: "status-line" });
 
     return el("div", { class: "panel" }, [
-      el("h2", { text: "Nowy model" }),
+      el("h2", { text: t("admin.newModel") }),
       el("div", { class: "stack" }, [
-        el("div", { class: "field" }, [el("label", { text: "Tytuł" }), title]),
-        el("div", { class: "field" }, [el("label", { text: "Opis" }), description]),
+        el("div", { class: "field" }, [el("label", { text: t("admin.field.title") }), title]),
+        el("div", { class: "field" }, [el("label", { text: t("admin.field.description") }), description]),
         el("div", { class: "inline" }, [
-          el("div", { class: "field grow" }, [el("label", { text: "Kategoria" }), category]),
-          el("div", { class: "field grow" }, [el("label", { text: "Licencja" }), license])
+          el("div", { class: "field grow" }, [el("label", { text: t("admin.field.category") }), category]),
+          el("div", { class: "field grow" }, [el("label", { text: t("admin.field.license") }), license])
         ]),
         el("div", {}, [
           el("button", {
             class: "primary",
-            text: "Utwórz model",
+            text: t("admin.createModel"),
             onclick: async function (event) {
-              const button = event.currentTarget;
+              var button = event.currentTarget;
               button.disabled = true;
               status.className = "status-line work";
-              status.textContent = "Zapisywanie...";
+              status.textContent = t("admin.saving");
               try {
-                const result = await api("/api/admin/models", {
+                var result = await api("/api/admin/models", {
                   method: "POST",
                   json: {
                     title: title.value.trim(),
                     description: description.value.trim(),
-                    category: category.value.trim() || "inne",
+                    category: category.value.trim() || "other",
                     license: license.value.trim() || "CC BY-NC 4.0",
                     is_published: true
                   }
                 });
                 status.className = "status-line ok";
-                status.textContent = "Utworzono model o adresie /model/" + result.slug;
+                status.textContent = t("admin.modelCreated", { slug: result.slug });
                 title.value = description.value = category.value = "";
                 await refreshModelSelect();
               } catch (err) {
@@ -159,11 +162,11 @@
     ]);
   }
 
-  let modelSelect = null;
+  var modelSelect = null;
 
   async function refreshModelSelect() {
     if (!modelSelect) return;
-    const data = await api("/api/models?limit=200");
+    var data = await api("/api/models?limit=200");
     clear(modelSelect);
     data.models.forEach(function (model) {
       modelSelect.appendChild(el("option", { value: model.slug, text: model.title }));
@@ -172,33 +175,33 @@
 
   function uploadPanel() {
     modelSelect = el("select", {});
-    const fileInput = el("input", { type: "file", accept: ".stl" });
-    const status = el("div", { class: "status-line" });
+    var fileInput = el("input", { type: "file", accept: ".stl" });
+    var status = el("div", { class: "status-line" });
     refreshModelSelect().catch(function () {});
 
     return el("div", { class: "panel" }, [
-      el("h2", { text: "Wgraj plik STL" }),
+      el("h2", { text: t("admin.upload") }),
       el("div", { class: "stack" }, [
-        el("div", { class: "field" }, [el("label", { text: "Model" }), modelSelect]),
-        el("div", { class: "field" }, [el("label", { text: "Plik .stl" }), fileInput]),
+        el("div", { class: "field" }, [el("label", { text: t("admin.field.model") }), modelSelect]),
+        el("div", { class: "field" }, [el("label", { text: t("admin.field.file") }), fileInput]),
         el("div", {}, [
           el("button", {
             class: "primary",
-            text: "Wgraj i policz sumę kontrolną",
+            text: t("admin.uploadButton"),
             onclick: async function (event) {
-              const button = event.currentTarget;
+              var button = event.currentTarget;
               if (!fileInput.files.length || !modelSelect.value) {
                 status.className = "status-line bad";
-                status.textContent = "Wybierz model i plik.";
+                status.textContent = t("admin.pickBoth");
                 return;
               }
               button.disabled = true;
               status.className = "status-line work";
-              status.textContent = "Wysyłanie...";
+              status.textContent = t("admin.uploading");
               try {
-                const body = new FormData();
+                var body = new FormData();
                 body.append("file", fileInput.files[0]);
-                const response = await fetch(
+                var response = await fetch(
                   "/api/admin/models/" + encodeURIComponent(modelSelect.value) + "/files",
                   {
                     method: "POST",
@@ -207,13 +210,15 @@
                     credentials: "same-origin"
                   }
                 );
-                const data = await response.json();
+                var data = await response.json();
                 if (!response.ok) throw new Error(errorText(data, response.status));
                 status.className = "status-line ok";
                 status.textContent =
-                  "Wgrano. SHA-256: " + data.sha256 + " · trójkątów: " + data.triangles +
-                  " · status: " + data.status +
-                  (data.deduplicated ? " · ta sama treść była już w bibliotece" : "");
+                  t("admin.uploaded", {
+                    sha: data.sha256,
+                    triangles: data.triangles,
+                    status: data.status
+                  }) + (data.deduplicated ? t("admin.uploadedDedup") : "");
                 fileInput.value = "";
               } catch (err) {
                 status.className = "status-line bad";
@@ -230,30 +235,36 @@
   }
 
   function auditPanel() {
-    const status = el("div", { class: "status-line" });
-    const results = el("div", {});
+    var status = el("div", { class: "status-line" });
+    var results = el("div", {});
 
     return el("div", { class: "panel" }, [
-      el("h2", { text: "Audyt integralności" }),
-      el("p", { class: "lbl", text: "Przelicza SHA-256 każdego pliku na dysku i sprawdza jego podpis. Cokolwiek się nie zgadza, trafia do kwarantanny i znika z katalogu." }),
+      el("h2", { text: t("admin.audit") }),
+      el("p", { class: "lbl", text: t("admin.auditHint") }),
       el("button", {
-        text: "Sprawdź całą bibliotekę",
+        text: t("admin.auditRun"),
         onclick: async function (event) {
-          const button = event.currentTarget;
+          var button = event.currentTarget;
           button.disabled = true;
           clear(results);
           status.className = "status-line work";
-          status.textContent = "Przeliczanie...";
+          status.textContent = t("admin.auditWorking");
           try {
-            const data = await api("/api/admin/audit", { method: "POST" });
+            var data = await api("/api/admin/audit", { method: "POST" });
             if (!data.problems.length) {
               status.className = "status-line ok";
-              status.textContent = "Sprawdzono " + data.checked + " plików — wszystko się zgadza.";
+              status.textContent = t("admin.auditClean", { checked: data.checked });
             } else {
               status.className = "status-line bad";
-              status.textContent = "Sprawdzono " + data.checked + " plików, problemów: " + data.problems.length;
-              const table = el("table", {}, [
-                el("tr", {}, [el("th", { text: "Plik" }), el("th", { text: "Powód" })])
+              status.textContent = t("admin.auditProblems", {
+                checked: data.checked,
+                problems: data.problems.length
+              });
+              var table = el("table", {}, [
+                el("tr", {}, [
+                  el("th", { text: t("admin.table.file") }),
+                  el("th", { text: t("admin.table.reason") })
+                ])
               ]);
               data.problems.forEach(function (problem) {
                 table.appendChild(el("tr", {}, [
@@ -277,18 +288,23 @@
   }
 
   function logPanel(entries) {
-    const table = el("table", {}, [
-      el("tr", {}, [el("th", { text: "Kiedy" }), el("th", { text: "Zdarzenie" }), el("th", { text: "Szczegóły" })])
+    var table = el("table", {}, [
+      el("tr", {}, [
+        el("th", { text: t("admin.table.when") }),
+        el("th", { text: t("admin.table.event") }),
+        el("th", { text: t("admin.table.details") })
+      ])
     ]);
     (entries || []).forEach(function (entry) {
       table.appendChild(el("tr", {}, [
-        el("td", { text: new Date(entry.ts * 1000).toLocaleString("pl-PL") }),
+        el("td", { text: new Date(entry.ts * 1000).toLocaleString(LOCALE) }),
         el("td", { text: entry.action }),
         el("td", { class: "mono", text: entry.detail })
       ]));
     });
-    return el("div", { class: "panel" }, [el("h2", { text: "Dziennik zdarzeń" }), table]);
+    return el("div", { class: "panel" }, [el("h2", { text: t("admin.log") }), table]);
   }
 
+  window.I18N.applyStatic(document);
   render();
 })();

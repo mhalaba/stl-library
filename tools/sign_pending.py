@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""Podpisuje pliki czekajace w bibliotece - z maszyny OFFLINE.
+"""Sign the library's pending files - from an OFFLINE machine.
 
-Ten skrypt uruchamiasz na komputerze, na ktorym trzymasz klucz prywatny.
-Serwer nigdy tego klucza nie widzi.
+Run this on the computer that holds the private key. The server never sees it.
 
-    export STL_SIGNING_PRIVATE_KEY=<hex klucza prywatnego>
-    python3 tools/sign_pending.py --url https://twoja-biblioteka.pl \\
+    export STL_SIGNING_PRIVATE_KEY=<private key hex>
+    python3 tools/sign_pending.py --url https://your-library.example \\
                                   --email admin@example.com
 
-Skrypt loguje sie jako administrator, pobiera liste plikow bez podpisu,
-odtwarza dla kazdego manifest, podpisuje go i odsyla sam podpis.
+The script signs in as an administrator, fetches the list of unsigned files,
+rebuilds each manifest, signs it locally and sends back the signature alone.
 """
 
 import argparse
@@ -39,7 +38,7 @@ class Client:
 
     def request(self, method: str, path: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         data = None
-        headers = {"Accept": "application/json"}
+        headers = {"Accept": "application/json", "Accept-Language": "en"}
         if body is not None:
             data = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
@@ -52,12 +51,12 @@ class Client:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")
-            raise SystemExit("Blad {} przy {} {}: {}".format(exc.code, method, path, detail))
+            raise SystemExit("Error {} on {} {}: {}".format(exc.code, method, path, detail))
 
     def login(self, email: str, password: str) -> None:
         result = self.request("POST", "/api/auth/login", {"email": email, "password": password})
         if not result.get("is_admin"):
-            raise SystemExit("To konto nie ma uprawnien administratora.")
+            raise SystemExit("This account has no administrator privileges.")
         self.csrf = result.get("csrf")
 
 
@@ -68,15 +67,15 @@ def canonical(manifest: Dict[str, Any]) -> bytes:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Podpisywanie plikow STL offline")
-    parser.add_argument("--url", required=True, help="adres biblioteki, np. https://biblioteka.pl")
-    parser.add_argument("--email", required=True, help="e-mail konta administratora")
-    parser.add_argument("--dry-run", action="store_true", help="pokaz, co zostaloby podpisane")
+    parser = argparse.ArgumentParser(description="Offline signing for STL files")
+    parser.add_argument("--url", required=True, help="library address, e.g. https://library.example")
+    parser.add_argument("--email", required=True, help="administrator account e-mail")
+    parser.add_argument("--dry-run", action="store_true", help="show what would be signed")
     args = parser.parse_args()
 
     private_hex = os.environ.get("STL_SIGNING_PRIVATE_KEY")
     if not private_hex:
-        print("Ustaw STL_SIGNING_PRIVATE_KEY przed uruchomieniem.", file=sys.stderr)
+        print("Set STL_SIGNING_PRIVATE_KEY before running.", file=sys.stderr)
         return 2
 
     private = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(private_hex))
@@ -84,20 +83,20 @@ def main() -> int:
     local_key_id = hashlib.sha256(public_raw).hexdigest()[:16]
 
     client = Client(args.url)
-    client.login(args.email, getpass.getpass("Haslo administratora: "))
+    client.login(args.email, getpass.getpass("Administrator password: "))
 
     listing = client.request("GET", "/api/admin/pending")
     server_key_id = listing.get("key_id")
     if server_key_id and server_key_id != local_key_id:
         raise SystemExit(
-            "Klucz prywatny ({}) nie pasuje do klucza publicznego serwera ({}).".format(
+            "The private key ({}) does not match the server's public key ({}).".format(
                 local_key_id, server_key_id
             )
         )
 
     pending = listing.get("pending", [])
     if not pending:
-        print("Nie ma nic do podpisania.")
+        print("Nothing to sign.")
         return 0
 
     publisher = listing.get("publisher", "stl-library")
@@ -125,7 +124,7 @@ def main() -> int:
         )
         signed += 1
 
-    print("\nPodpisano plikow: {}".format(signed))
+    print("\nFiles signed: {}".format(signed))
     return 0
 
 

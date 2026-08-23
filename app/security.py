@@ -1,16 +1,16 @@
-"""Kryptografia biblioteki.
+"""The library's cryptography.
 
-Trzy niezalezne warstwy - kazda odpowiada za co innego:
+Three independent layers, each answering a different question:
 
-1. SHA-256 pliku            -> INTEGRALNOSC. Wykrywa kazda zmiane bajtow.
-2. Podpis Ed25519 manifestu -> AUTENTYCZNOSC. Wykrywa podmiane, ktorej
-                               towarzyszy podmiana hasha w bazie danych.
-                               Klucz prywatny moze (i powinien) lezec poza
-                               serwerem, wiec wlamywacz nie podrobi podpisu.
-3. Token HMAC-SHA256        -> KONTROLA DOSTEPU. Ogranicza, kto i jak dlugo
-                               moze pobrac dany plik.
+1. SHA-256 of the file      -> INTEGRITY. Catches any change to the bytes.
+2. Ed25519 manifest signature -> AUTHENTICITY. Catches a swap that comes with a
+                               matching edit to the digest in the database. The
+                               private key can (and should) live off the server,
+                               so an intruder cannot forge a signature.
+3. HMAC-SHA256 token        -> ACCESS CONTROL. Limits who may download a file,
+                               and for how long.
 
-Sam token z punktu 3 NIE chroni przed podmiana pliku - robia to punkty 1 i 2.
+The token in layer 3 does NOT protect against a swapped file. Layers 1 and 2 do.
 """
 
 import base64
@@ -33,7 +33,7 @@ MANIFEST_SCHEMA = "stl-library/manifest/v1"
 PBKDF2_ITERATIONS = 260_000
 
 
-# --- Kodowanie ---------------------------------------------------------------
+# --- Encoding ----------------------------------------------------------------
 
 
 def b64e(raw: bytes) -> str:
@@ -45,7 +45,7 @@ def b64d(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + padding)
 
 
-# --- Hasla -------------------------------------------------------------------
+# --- Passwords ---------------------------------------------------------------
 
 
 def hash_password(password: str) -> str:
@@ -67,7 +67,7 @@ def verify_password(password: str, stored: str) -> bool:
     return hmac.compare_digest(dk, b64d(hash_b64))
 
 
-# --- Podpisane tokeny (sesja, link do pobrania) -------------------------------
+# --- Signed tokens (session, download link) ----------------------------------
 
 
 def _sign_hmac(payload: bytes, purpose: str) -> bytes:
@@ -78,7 +78,11 @@ def _sign_hmac(payload: bytes, purpose: str) -> bytes:
 
 
 def make_token(data: Dict[str, Any], ttl_seconds: int, purpose: str) -> str:
-    """Token = base64(json) . base64(HMAC). Nieszyfrowany, ale niepodrabialny."""
+    """Token = base64(json) . base64(HMAC). Readable, but not forgeable.
+
+    `purpose` is mixed into the key, so a session token cannot be replayed as a
+    download token or vice versa.
+    """
     body = dict(data)
     body["exp"] = int(time.time()) + ttl_seconds
     payload = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -86,7 +90,7 @@ def make_token(data: Dict[str, Any], ttl_seconds: int, purpose: str) -> str:
 
 
 def read_token(token: str, purpose: str) -> Optional[Dict[str, Any]]:
-    """Zwraca zawartosc tokenu albo None, jesli podpis lub termin sie nie zgadza."""
+    """Return the token body, or None if the signature or the deadline fails."""
     try:
         payload_b64, signature_b64 = token.split(".", 1)
         payload = b64d(payload_b64)
@@ -107,7 +111,7 @@ def read_token(token: str, purpose: str) -> Optional[Dict[str, Any]]:
     return body
 
 
-# --- Ed25519: manifest i podpis pliku ----------------------------------------
+# --- Ed25519: manifest and file signature ------------------------------------
 
 
 def load_private_key() -> Optional[Ed25519PrivateKey]:
@@ -137,7 +141,7 @@ def public_key_hex() -> Optional[str]:
 
 
 def key_id(public_hex: str) -> str:
-    """Krotki identyfikator klucza - trafia do manifestu i naglowkow HTTP."""
+    """Short identifier for a key - goes into the manifest and HTTP headers."""
     return hashlib.sha256(bytes.fromhex(public_hex)).hexdigest()[:16]
 
 
@@ -162,10 +166,10 @@ def build_manifest(
 
 
 def canonical(manifest: Dict[str, Any]) -> bytes:
-    """Jedna, deterministyczna reprezentacja bajtowa manifestu.
+    """One deterministic byte representation of a manifest.
 
-    Podpis dotyczy dokladnie tych bajtow, wiec kanonikalizacja musi byc
-    identyczna po stronie serwera, narzedzia podpisujacego i weryfikatora.
+    The signature covers exactly these bytes, so canonicalisation has to be
+    identical on the server, in the signing tool and in the verifier.
     """
     return json.dumps(
         manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False
@@ -186,11 +190,11 @@ def verify_manifest(
         return False
 
 
-# --- Hash pliku --------------------------------------------------------------
+# --- File digest -------------------------------------------------------------
 
 
 def sha256_file(path, chunk_size: int = 1024 * 1024) -> Tuple[str, int]:
-    """Zwraca (sha256 hex, rozmiar w bajtach). Czyta strumieniowo."""
+    """Return (sha256 hex, size in bytes). Reads in chunks."""
     digest = hashlib.sha256()
     size = 0
     with open(path, "rb") as handle:

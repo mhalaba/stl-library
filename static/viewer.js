@@ -1,5 +1,5 @@
-/* Podgląd 3D plików STL na czystym WebGL - bez zewnętrznych bibliotek,
-   dzięki czemu strona działa przy restrykcyjnym CSP (script-src 'self'). */
+/* 3D preview of STL files on bare WebGL - no external libraries, which is what
+   lets the page work under a strict CSP (script-src 'self'). */
 
 (function () {
   "use strict";
@@ -32,7 +32,7 @@
       gl_FragColor = vec4(color, 1.0);
     }`;
 
-  /* --- Parsowanie STL --- */
+  /* --- STL parsing --- */
 
   function parseSTL(buffer) {
     const view = new DataView(buffer);
@@ -64,7 +64,7 @@
         normals[base + 2] = nz;
         offset += 12;
       }
-      offset += 2; // atrybut
+      offset += 2; // attribute byte count
     }
     return { positions: positions, normals: normals, triangles: count };
   }
@@ -90,7 +90,7 @@
     };
   }
 
-  /* --- Minimalna algebra macierzy 4x4 --- */
+  /* --- Minimal 4x4 matrix algebra --- */
 
   function multiply(a, b) {
     const out = new Float32Array(16);
@@ -216,9 +216,9 @@
 
   STLViewer.prototype.load = function (buffer) {
     const mesh = parseSTL(buffer);
-    if (!mesh.triangles) throw new Error("Nie udało się odczytać geometrii");
+    if (!mesh.triangles) throw new Error(window.I18N.t("viewer.parseFailed"));
 
-    // Wyśrodkowanie i normalizacja skali, żeby każdy model wypełniał kadr.
+    // Centre the mesh and normalise scale so every model fills the frame.
     const p = mesh.positions;
     let minX = Infinity, minY = Infinity, minZ = Infinity;
     let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;

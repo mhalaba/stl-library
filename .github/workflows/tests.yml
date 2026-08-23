@@ -5,7 +5,7 @@ on:
     branches: [main]
   pull_request:
   schedule:
-    # Raz w tygodniu, zeby wylapac regresje z nowych wersji zaleznosci.
+    # Weekly, to catch regressions coming from new dependency releases.
     - cron: "0 5 * * 1"
 
 jobs:
@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Dolna i gorna granica wspieranych wersji Pythona.
+        # Lower and upper bound of the supported Python range.
         python-version: ["3.9", "3.13"]
 
     steps:
@@ -25,26 +25,26 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Instalacja zaleznosci
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Testy jednostkowe
+      - name: Unit tests
         run: python tests/unit.py
 
-      - name: Testy end-to-end
+      - name: End-to-end tests
         run: python tests/e2e.py
 
-      - name: Kontrola, czy sekrety nie trafily do repozytorium
+      - name: Check that no secrets reached the repository
         run: |
-          # Klucz Ed25519 to 64 znaki hex; token GitHuba zaczyna sie od gho_/ghp_.
+          # An Ed25519 key is 64 hex characters; GitHub tokens start with gho_/ghp_.
           if git grep -nIE "(gh[pousr]_[A-Za-z0-9]{20,}|STL_SIGNING_PRIVATE_KEY=[0-9a-f]{32,})" -- . ; then
-            echo "::error::Znaleziono material, ktory wyglada na sekret."
+            echo "::error::Found material that looks like a secret."
             exit 1
           fi
           if git ls-files | grep -qE "^(\.env$|data/)"; then
-            echo "::error::Plik .env albo katalog data/ trafil do repozytorium."
+            echo "::error::A .env file or the data/ directory reached the repository."
             exit 1
           fi
-          echo "Czysto."
+          echo "Clean."

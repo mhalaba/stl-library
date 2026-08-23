@@ -27,7 +27,7 @@ a:hover { text-decoration: underline; }
 
 .wrap { max-width: 1120px; margin: 0 auto; padding: 0 20px; }
 
-/* --- Nagłówek --- */
+/* --- Header --- */
 
 header.top {
   border-bottom: 1px solid var(--line);
@@ -110,7 +110,35 @@ button.ghost { background: transparent; }
 .auth-box { display: flex; align-items: center; gap: 8px; }
 .auth-box .who { color: var(--text-dim); font-size: 13px; }
 
-/* --- Karty katalogu --- */
+/* --- Language switcher --- */
+
+.lang-switch {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.lang-switch button {
+  border: 0;
+  border-radius: 0;
+  padding: 6px 9px;
+  font-size: 12px;
+  letter-spacing: .04em;
+  background: transparent;
+  color: var(--text-dim);
+}
+.lang-switch button:hover:not(:disabled) {
+  background: var(--bg-raised);
+  color: var(--text);
+  border-color: transparent;
+}
+.lang-switch button.lang-active {
+  background: var(--accent-dim);
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* --- Catalogue cards --- */
 
 .grid {
   display: grid;
@@ -146,7 +174,7 @@ button.ghost { background: transparent; }
 .tag.warn { color: var(--warn); border-color: #4a3a10; }
 .tag.bad  { color: var(--bad);  border-color: #5c2020; }
 
-/* --- Widok modelu --- */
+/* --- Model view --- */
 
 .model-head { margin: 26px 0 8px; }
 .model-head h1 { margin: 0 0 6px; font-size: 26px; }
@@ -218,7 +246,7 @@ button.ghost { background: transparent; }
   pointer-events: none;
 }
 
-/* --- Modal logowania --- */
+/* --- Sign-in modal --- */
 
 .modal-back {
   position: fixed;
@@ -260,7 +288,7 @@ button.ghost { background: transparent; }
 
 .empty { color: var(--text-dim); padding: 40px 0; text-align: center; }
 
-/* --- Panel admina --- */
+/* --- Administrator panel --- */
 
 .admin-grid {
   display: grid;

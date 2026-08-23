@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Test end-to-end: sprawdza, czy podmiana pliku faktycznie jest wykrywana.
+"""End-to-end test: does swapping a file actually get caught?
 
     ./.venv/bin/python tests/e2e.py
 
-Test uruchamia prawdziwy serwer w trybie OFFLINE (bez klucza prywatnego),
-podpisuje pliki tak, jak robi to tools/sign_pending.py, a potem odgrywa rolę
-napastnika: podmienia plik na dysku, a następnie podmienia plik RAZEM z
-poprawieniem sumy kontrolnej w bazie danych. Oba ataki muszą zostać zatrzymane.
+The test starts a real server in OFFLINE mode (no private key), signs files the
+way tools/sign_pending.py does, and then plays the attacker: it swaps a file on
+disk, and then swaps a file *together with* correcting the digest in the
+database. Both attacks have to be stopped.
 """
 
 import hashlib
@@ -28,8 +28,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-# Ten sam sekret dostanie serwer w podprocesie. Dzieki temu test moze sam
-# zlozyc poprawny token pobrania i sprawdzic, jak serwer traktuje termin waznosci.
+# The server subprocess gets the same secret. That lets the test mint its own
+# download tokens and check how the server treats their expiry.
 SECRET = "0" * 64
 os.environ["STL_SECRET_KEY"] = SECRET
 
@@ -38,11 +38,11 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey 
 from app import security as app_security  # noqa: E402
 
 ADMIN_EMAIL = "admin@example.com"
-ADMIN_PASSWORD = "bardzo-dlugie-haslo-testowe"
+ADMIN_PASSWORD = "a-very-long-test-password"
 PORT = 8731
 BASE = "http://127.0.0.1:{}".format(PORT)
 
-ASCII_STL = b"""solid plytka
+ASCII_STL = b"""solid plate
   facet normal 0 0 1
     outer loop
       vertex 0 0 0
@@ -57,7 +57,7 @@ ASCII_STL = b"""solid plytka
       vertex 0 10 0
     endloop
   endfacet
-endsolid plytka
+endsolid plate
 """
 
 passed = 0
@@ -75,7 +75,7 @@ def check(condition: bool, label: str) -> None:
 
 
 def cube_stl(scale: float = 10.0) -> bytes:
-    """Minimalny, poprawny binarny STL - sześcian z 12 trójkątów."""
+    """A minimal, valid binary STL - a cube of 12 triangles."""
     v = [
         (0, 0, 0), (scale, 0, 0), (scale, scale, 0), (0, scale, 0),
         (0, 0, scale), (scale, 0, scale), (scale, scale, scale), (0, scale, scale),
@@ -103,14 +103,14 @@ class Client:
         self.csrf = None
 
     def _headers(self, extra=None):
-        headers = {"Accept": "application/json"}
+        headers = {"Accept": "application/json", "Accept-Language": "en"}
         if self.csrf:
             headers["X-CSRF-Token"] = self.csrf
         headers.update(extra or {})
         return headers
 
     def call(self, method, path, body=None, raw=False):
-        """Zwraca (kod_http, dane)."""
+        """Returns (http status, data)."""
         data = None
         headers = self._headers()
         if body is not None:
@@ -121,8 +121,8 @@ class Client:
             with self.opener.open(req, timeout=30) as response:
                 payload = response.read()
                 if raw:
-                    # response.headers to obiekt Message - szuka nazw bez wzgledu
-                    # na wielkosc liter, a serwer wysyla je malymi.
+                    # response.headers is a Message object - it looks names up
+                    # case-insensitively, and the server sends them lowercase.
                     return response.status, payload, response.headers
                 return response.status, json.loads(payload.decode())
         except urllib.error.HTTPError as exc:
@@ -184,7 +184,8 @@ def sign_all_pending(client, private, key_id, publisher):
         code, _ = client.call(
             "POST",
             "/api/admin/signatures",
-            {"file_id": item["id"], "manifest": manifest, "signature": private.sign(canonical(manifest)).hex()},
+            {"file_id": item["id"], "manifest": manifest,
+             "signature": private.sign(canonical(manifest)).hex()},
         )
         if code == 200:
             signed += 1
@@ -200,9 +201,9 @@ def main() -> int:
     env = dict(os.environ)
     env.update({
         "STL_DATA_DIR": str(workdir / "data"),
-        "STL_SECRET_KEY": "0" * 64,
-        "STL_SIGNING_PUBLIC_KEY": public_raw.hex(),   # tryb offline: bez klucza prywatnego
-        "STL_PUBLISHER": "test-biblioteka",
+        "STL_SECRET_KEY": SECRET,
+        "STL_SIGNING_PUBLIC_KEY": public_raw.hex(),   # offline mode: no private key
+        "STL_PUBLISHER": "test-library",
         "STL_ADMIN_EMAIL": ADMIN_EMAIL,
         "STL_ADMIN_PASSWORD": ADMIN_PASSWORD,
         "STL_COOKIE_SECURE": "false",
@@ -226,99 +227,101 @@ def main() -> int:
                     return 1
                 time.sleep(0.25)
         else:
-            print("Serwer nie wstal.")
+            print("The server did not come up.")
             return 1
 
         admin = Client(BASE)
 
-        print("\n[1] Konta i uprawnienia")
+        print("\n[1] Accounts and permissions")
         status, _ = admin.login(ADMIN_EMAIL, ADMIN_PASSWORD)
-        check(status == 200, "administrator loguje sie")
-        status, _ = Client(BASE).login(ADMIN_EMAIL, "zle-haslo-zupelnie")
-        check(status == 401, "bledne haslo odrzucone")
+        check(status == 200, "administrator signs in")
+        status, _ = Client(BASE).login(ADMIN_EMAIL, "an-entirely-wrong-password")
+        check(status == 401, "wrong password rejected")
 
         anon = Client(BASE)
-        status, _ = anon.call("POST", "/api/admin/models", {"title": "Proba przejecia"})
-        check(status == 401, "anonim nie utworzy modelu")
+        status, _ = anon.call("POST", "/api/admin/models", {"title": "Takeover attempt"})
+        check(status == 401, "an anonymous visitor cannot create a model")
 
         user = Client(BASE)
-        status, _ = user.register("user@example.com", "inne-dlugie-haslo-uzytkownika")
-        check(status == 200, "zwykly uzytkownik sie rejestruje")
-        status, _ = user.call("POST", "/api/admin/models", {"title": "Proba przejecia"})
-        check(status == 403, "zwykly uzytkownik nie ma dostepu do panelu admina")
+        status, _ = user.register("user@example.com", "another-long-user-password")
+        check(status == 200, "an ordinary user registers")
+        status, _ = user.call("POST", "/api/admin/models", {"title": "Takeover attempt"})
+        check(status == 403, "an ordinary user has no access to the admin panel")
 
-        # CSRF: żądanie z ciasteczkiem sesji, ale bez nagłówka.
+        # CSRF: a request with the session cookie but without the header.
         no_csrf = Client(BASE)
         no_csrf.login(ADMIN_EMAIL, ADMIN_PASSWORD)
         no_csrf.csrf = None
-        status, _ = no_csrf.call("POST", "/api/admin/models", {"title": "Bez CSRF"})
-        check(status == 403, "zadanie bez tokenu CSRF odrzucone")
+        status, _ = no_csrf.call("POST", "/api/admin/models", {"title": "No CSRF"})
+        check(status == 403, "a request without the CSRF token is rejected")
 
-        print("\n[2] Model i wgrywanie plikow")
+        print("\n[2] Models and uploads")
         status, model = admin.call("POST", "/api/admin/models", {
-            "title": "Testowy szescian", "description": "opis", "category": "test", "license": "CC0"
+            "title": "Test cube", "description": "description", "category": "test", "license": "CC0"
         })
-        check(status == 200, "model utworzony")
+        check(status == 200, "model created")
         slug = model["slug"]
 
-        status, upload = admin.upload(slug, "szescian.stl", cube_stl())
-        check(status == 200 and upload["status"] == "pending", "plik wgrany, czeka na podpis (tryb offline)")
+        status, upload = admin.upload(slug, "cube.stl", cube_stl())
+        check(status == 200 and upload["status"] == "pending",
+              "file uploaded, awaiting signature (offline mode)")
         file_id = upload["file_id"]
         original_sha = upload["sha256"]
 
-        status, second = admin.upload(slug, "szescian2.stl", cube_stl(12.0))
-        check(status == 200, "drugi plik wgrany")
+        status, second = admin.upload(slug, "cube2.stl", cube_stl(12.0))
+        check(status == 200, "second file uploaded")
         second_id = second["file_id"]
 
-        status, bad = admin.upload(slug, "smieci.stl", b"to nie jest zaden STL, tylko tekst")
-        check(status == 400, "plik nie bedacy STL-em odrzucony")
+        status, bad = admin.upload(slug, "junk.stl", b"this is not an STL at all, just text")
+        check(status == 400, "a file that is not an STL is rejected")
 
-        print("\n[3] Pobieranie bez podpisu")
+        print("\n[3] Downloading without a signature")
         status, _ = user.call("POST", "/api/files/{}/grant".format(file_id))
-        check(status == 409, "niepodpisany plik nie da sie pobrac")
+        check(status == 409, "an unsigned file cannot be downloaded")
 
-        print("\n[4] Podpisywanie z maszyny offline")
-        signed_count = sign_all_pending(admin, private, key_id, "test-biblioteka")
-        check(signed_count == 2, "podpisano oba pliki ({})".format(signed_count))
+        print("\n[4] Signing from an offline machine")
+        signed_count = sign_all_pending(admin, private, key_id, "test-library")
+        check(signed_count == 2, "both files signed ({})".format(signed_count))
 
-        # Serwer musi odrzucić podpis złożony obcym kluczem.
+        # The server must reject a signature made with a foreign key.
         intruder = Ed25519PrivateKey.generate()
-        status, third = admin.upload(slug, "trzeci.stl", cube_stl(7.0))
+        status, third = admin.upload(slug, "third.stl", cube_stl(7.0))
         third_id = third["file_id"]
         manifest = {
-            "schema": "stl-library/manifest/v1", "publisher": "test-biblioteka", "model": slug,
-            "filename": "trzeci.stl", "size": third["size"], "sha256": third["sha256"],
+            "schema": "stl-library/manifest/v1", "publisher": "test-library", "model": slug,
+            "filename": "third.stl", "size": third["size"], "sha256": third["sha256"],
             "uploaded_at": int(time.time()), "key_id": key_id,
         }
         status, _ = admin.call("POST", "/api/admin/signatures", {
-            "file_id": third_id, "manifest": manifest, "signature": intruder.sign(canonical(manifest)).hex()
+            "file_id": third_id, "manifest": manifest,
+            "signature": intruder.sign(canonical(manifest)).hex()
         })
-        check(status == 400, "podpis obcym kluczem odrzucony")
+        check(status == 400, "a signature from a foreign key is rejected")
 
-        print("\n[5] Uczciwe pobranie")
+        print("\n[5] An honest download")
         status, grant = user.call("POST", "/api/files/{}/grant".format(file_id))
-        check(status == 200, "uzytkownik dostaje link do pobrania")
+        check(status == 200, "the user gets a download link")
 
         status, payload, headers = user.call("GET", grant["url"], raw=True)
-        check(status == 200, "plik pobrany")
-        check(hashlib.sha256(payload).hexdigest() == original_sha, "tresc zgadza sie z suma kontrolna")
-        check(headers.get("X-STL-Key-Id") == key_id, "naglowek X-STL-Key-Id niesie identyfikator klucza")
+        check(status == 200, "file downloaded")
+        check(hashlib.sha256(payload).hexdigest() == original_sha, "content matches the digest")
+        check(headers.get("X-STL-Key-Id") == key_id, "X-STL-Key-Id header carries the key identifier")
 
         status, anon_grant = anon.call("POST", "/api/files/{}/grant".format(file_id))
-        check(status == 401, "anonim nie dostanie linku")
+        check(status == 401, "an anonymous visitor gets no link")
 
-        status, _, _ = user.call("GET", "/api/download/{}?token=podrobka".format(file_id), raw=True)
-        check(status == 403, "zmyslony token odrzucony")
+        status, _, _ = user.call("GET", "/api/download/{}?token=made-up".format(file_id), raw=True)
+        check(status == 403, "a made-up token is rejected")
 
-        # Ten sam token przeklejony pod inny plik.
+        # The same token moved to a different file.
         token = grant["url"].split("token=")[1]
         status, _, _ = user.call("GET", "/api/download/{}?token={}".format(second_id, token), raw=True)
-        check(status == 403, "token przypisany do jednego pliku nie dziala na innym")
+        check(status == 403, "a token bound to one file does not work on another")
 
-        print("\n[6] Weryfikacja offline narzedziem verify_stl.py")
+        print("\n[6] Offline verification with verify_stl.py")
         status, sidecar = user.call("GET", "/api/files/{}/signature".format(file_id))
-        stl_path = workdir / "pobrany.stl"
-        sig_path = workdir / "pobrany.stl.sig.json"
+        stl_path = workdir / "downloaded.stl"
+        sig_path = workdir / "downloaded.stl.sig.json"
         stl_path.write_bytes(payload)
         sig_path.write_text(json.dumps(sidecar), encoding="utf-8")
 
@@ -326,9 +329,9 @@ def main() -> int:
             [sys.executable, str(ROOT / "tools" / "verify_stl.py"), str(stl_path), str(sig_path)],
             capture_output=True, text=True,
         )
-        check(result.returncode == 0, "verify_stl.py potwierdza autentycznosc")
+        check(result.returncode == 0, "verify_stl.py confirms authenticity")
 
-        # Ta sama weryfikacja bez biblioteki `cryptography` - czysty Python.
+        # The same verification without the `cryptography` library - pure Python.
         pure_env = dict(os.environ, PYTHONPATH="")
         pure = subprocess.run(
             [sys.executable, "-c",
@@ -337,17 +340,17 @@ def main() -> int:
                  str(stl_path), str(sig_path), str(ROOT / "tools" / "verify_stl.py"))],
             capture_output=True, text=True, env=pure_env,
         )
-        check("OK" in pure.stdout, "wbudowana implementacja Ed25519 (bez zaleznosci) tez potwierdza")
+        check("OK" in pure.stdout, "the built-in Ed25519 implementation confirms it too")
 
-        tampered_copy = workdir / "podmieniony.stl"
+        tampered_copy = workdir / "swapped.stl"
         tampered_copy.write_bytes(cube_stl(11.0))
         result = subprocess.run(
             [sys.executable, str(ROOT / "tools" / "verify_stl.py"), str(tampered_copy), str(sig_path)],
             capture_output=True, text=True,
         )
-        check(result.returncode == 1, "verify_stl.py wykrywa podmieniony plik u uzytkownika")
+        check(result.returncode == 1, "verify_stl.py catches a swap on the user's side")
 
-        print("\n[7] ATAK: podmiana pliku na dysku serwera")
+        print("\n[7] ATTACK: file swapped on the server's disk")
         db_path = workdir / "data" / "library.db"
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
@@ -356,22 +359,22 @@ def main() -> int:
         conn.close()
 
         os.chmod(str(target), 0o644)
-        target.write_bytes(cube_stl(999.0))  # inna geometria, poprawny STL
+        target.write_bytes(cube_stl(999.0))  # different geometry, still a valid STL
 
         status, grant2 = user.call("POST", "/api/files/{}/grant".format(file_id))
         status, body, _ = user.call("GET", grant2["url"], raw=True)
-        check(status == 409, "podmieniony plik NIE zostaje wydany")
+        check(status == 409, "the swapped file is NOT released")
 
         conn = sqlite3.connect(str(db_path))
         state = conn.execute("SELECT status FROM files WHERE id = ?", (file_id,)).fetchone()[0]
         conn.close()
-        check(state == "quarantined", "plik automatycznie trafil do kwarantanny")
+        check(state == "quarantined", "the file was quarantined automatically")
 
         status, models = user.call("GET", "/api/models/{}".format(slug))
         quarantined = [f for f in models["files"] if f["id"] == file_id][0]
-        check(quarantined["status"] == "quarantined", "katalog pokazuje plik jako zablokowany")
+        check(quarantined["status"] == "quarantined", "the catalogue shows the file as blocked")
 
-        print("\n[8] ATAK: podmiana pliku RAZEM z poprawieniem hasha w bazie")
+        print("\n[8] ATTACK: file swapped AND the digest corrected in the database")
         evil = cube_stl(31.0)
         evil_sha = hashlib.sha256(evil).hexdigest()
 
@@ -381,7 +384,7 @@ def main() -> int:
         victim = workdir / "data" / "storage" / row["storage_path"]
         os.chmod(str(victim), 0o644)
         victim.write_bytes(evil)
-        # Napastnik ma pełny dostęp do bazy i "naprawia" wszystkie widoczne ślady.
+        # The attacker has full database access and "fixes" every visible trace.
         conn.execute(
             "UPDATE files SET sha256 = ?, size = ? WHERE id = ?", (evil_sha, len(evil), second_id)
         )
@@ -391,83 +394,85 @@ def main() -> int:
         status, grant3 = user.call("POST", "/api/files/{}/grant".format(second_id))
         if status == 200:
             status, _, _ = user.call("GET", grant3["url"], raw=True)
-        check(status == 409, "podmiana z poprawionym hashem w bazie tez zostaje zatrzymana")
+        check(status == 409, "a swap with a corrected digest in the database is stopped too")
 
         status, verdict = user.call("GET", "/api/files/{}/verify".format(second_id))
-        check(verdict["ok"] is False, "endpoint weryfikacji zglasza problem")
-        check("podpis" in verdict["reason"] or "manifest" in verdict["reason"],
-              "powod wskazuje na niezgodnosc podpisu: {}".format(verdict["reason"]))
+        check(verdict["ok"] is False, "the verify endpoint reports a problem")
+        check(verdict["reason_key"] == "integrity.catalog_mismatch",
+              "the reason points at the manifest mismatch [{}]".format(verdict["reason_key"]))
 
-        print("\n[9] Audyt calej biblioteki")
+        print("\n[9] Auditing the whole library")
         status, audit = admin.call("POST", "/api/admin/audit")
-        check(status == 200 and len(audit["problems"]) >= 2, "audyt wylapuje oba uszkodzone pliki")
+        check(status == 200 and len(audit["problems"]) >= 2, "the audit catches both damaged files")
 
         cli = subprocess.run(
             [sys.executable, str(ROOT / "tools" / "audit.py"), "--json"],
             capture_output=True, text=True, cwd=str(ROOT), env=env,
         )
-        check(cli.returncode == 1, "tools/audit.py konczy sie kodem 1 przy problemach")
+        check(cli.returncode == 1, "tools/audit.py exits with code 1 when problems exist")
 
-        print("\n[10] Zabezpieczenia HTTP")
+        print("\n[10] HTTP hardening")
         status, _, headers = anon.call("GET", "/", raw=True)
-        check(headers.get("X-Content-Type-Options") == "nosniff", "naglowek nosniff obecny")
-        check("frame-ancestors 'none'" in headers.get("Content-Security-Policy", ""), "CSP zablokowany clickjacking")
+        check(headers.get("X-Content-Type-Options") == "nosniff", "nosniff header present")
+        check("frame-ancestors 'none'" in headers.get("Content-Security-Policy", ""),
+              "CSP blocks clickjacking")
 
         status, _ = anon.call("GET", "/api/download/1?token=" + "A" * 200, raw=False)
-        check(status == 403, "smieciowy token nie wywala serwera")
+        check(status == 403, "a garbage token does not crash the server")
 
-        print("\n[11] Plik w formacie ASCII STL")
-        status, ascii_up = admin.upload(slug, "plytka.stl", ASCII_STL)
-        check(status == 200 and ascii_up["triangles"] == 2, "ASCII STL przyjety i policzony")
-        sign_all_pending(admin, private, key_id, "test-biblioteka")
+        print("\n[11] ASCII STL files")
+        status, ascii_up = admin.upload(slug, "plate.stl", ASCII_STL)
+        check(status == 200 and ascii_up["triangles"] == 2, "ASCII STL accepted and counted")
+        sign_all_pending(admin, private, key_id, "test-library")
         status, ascii_grant = user.call("POST", "/api/files/{}/grant".format(ascii_up["file_id"]))
         status, ascii_payload, _ = user.call("GET", ascii_grant["url"], raw=True)
-        check(status == 200 and ascii_payload == ASCII_STL, "ASCII STL wydany bez zmian w bajtach")
+        check(status == 200 and ascii_payload == ASCII_STL, "ASCII STL served byte for byte")
 
-        print("\n[12] Deduplikacja i usuwanie plikow")
-        status, other_model = admin.call("POST", "/api/admin/models", {"title": "Drugi model"})
+        print("\n[12] Deduplication and deletion")
+        status, other_model = admin.call("POST", "/api/admin/models", {"title": "Second model"})
         shared_bytes = cube_stl(5.0)
-        status, copy_a = admin.upload(slug, "wspolny.stl", shared_bytes)
-        status, copy_b = admin.upload(other_model["slug"], "wspolny.stl", shared_bytes)
-        check(copy_b["deduplicated"] is True, "ta sama tresc wgrana drugi raz nie zajmuje miejsca dwa razy")
-        check(copy_a["sha256"] == copy_b["sha256"], "obie pozycje wskazuja te sama tresc")
-        sign_all_pending(admin, private, key_id, "test-biblioteka")
+        status, copy_a = admin.upload(slug, "shared.stl", shared_bytes)
+        status, copy_b = admin.upload(other_model["slug"], "shared.stl", shared_bytes)
+        check(copy_b["deduplicated"] is True, "identical content uploaded twice is stored once")
+        check(copy_a["sha256"] == copy_b["sha256"], "both entries point at the same content")
+        sign_all_pending(admin, private, key_id, "test-library")
 
         status, _ = admin.call("DELETE", "/api/admin/files/{}".format(copy_a["file_id"]))
-        check(status == 200, "pierwsza pozycja usunieta")
+        check(status == 200, "the first entry is deleted")
         status, grant_b = user.call("POST", "/api/files/{}/grant".format(copy_b["file_id"]))
         status, body_b, _ = user.call("GET", grant_b["url"], raw=True)
         check(status == 200 and hashlib.sha256(body_b).hexdigest() == copy_b["sha256"],
-              "usuniecie jednej pozycji nie skasowalo tresci wspoldzielonej z druga")
+              "deleting one entry did not remove content shared with another")
 
-        print("\n[13] Model nieopublikowany")
+        print("\n[13] Unpublished model")
         status, draft = admin.call("POST", "/api/admin/models", {
-            "title": "Szkic roboczy", "is_published": False
+            "title": "Working draft", "is_published": False
         })
         status, listing = anon.call("GET", "/api/models")
         check(draft["slug"] not in [m["slug"] for m in listing["models"]],
-              "szkic nie pojawia sie w katalogu")
+              "the draft does not appear in the catalogue")
         status, _ = anon.call("GET", "/api/models/{}".format(draft["slug"]))
-        check(status == 404, "anonim nie otworzy szkicu po adresie")
+        check(status == 404, "an anonymous visitor cannot open the draft by address")
 
-        print("\n[14] Termin waznosci linku i sciezka poza magazynem")
-        # Test zna sekret serwera, wiec sklada wlasne tokeny. Najpierw kontrola:
-        # swiezy token musi dzialac, inaczej ponizszy wynik nic by nie dowodzil.
+        print("\n[14] Link expiry and paths outside storage")
+        # The test knows the server's secret, so it mints its own tokens. First a
+        # control: a fresh token has to work, otherwise the result below proves
+        # nothing.
         fresh = app_security.make_token(
-            {"fid": copy_b["file_id"], "uid": 2, "sha": copy_b["sha256"], "n": "kontrola"},
+            {"fid": copy_b["file_id"], "uid": 2, "sha": copy_b["sha256"], "n": "control"},
             300, "download")
         status, _, _ = user.call(
             "GET", "/api/download/{}?token={}".format(copy_b["file_id"], fresh), raw=True)
-        check(status == 200, "token zlozony sekretem serwera dziala (kontrola testu)")
+        check(status == 200, "a token minted with the server's secret works (test control)")
 
         stale = app_security.make_token(
-            {"fid": copy_b["file_id"], "uid": 2, "sha": copy_b["sha256"], "n": "przeterminowany"},
+            {"fid": copy_b["file_id"], "uid": 2, "sha": copy_b["sha256"], "n": "expired"},
             -60, "download")
         status, _, _ = user.call(
             "GET", "/api/download/{}?token={}".format(copy_b["file_id"], stale), raw=True)
-        check(status == 403, "ten sam token po terminie waznosci odrzucony")
+        check(status == 403, "the same token past its deadline is rejected")
 
-        # Napastnik z dostepem do bazy kieruje wpis poza katalog magazynu.
+        # An attacker with database access points an entry outside the storage root.
         conn = sqlite3.connect(str(db_path))
         conn.execute("UPDATE files SET storage_path = ? WHERE id = ?",
                      ("../../../../etc/hosts", copy_b["file_id"]))
@@ -476,18 +481,36 @@ def main() -> int:
         status, grant_evil = user.call("POST", "/api/files/{}/grant".format(copy_b["file_id"]))
         if status == 200:
             status, _, _ = user.call("GET", grant_evil["url"], raw=True)
-        check(status == 409, "sciezka wychodzaca poza magazyn zablokowana")
+        check(status == 409, "a path escaping the storage directory is blocked")
 
-        print("\n[15] Limit prob logowania")
+        print("\n[15] Sign-in rate limit")
         attacker = Client(BASE)
         codes = []
         for attempt in range(11):
             code, _ = attacker.call("POST", "/api/auth/login", {
-                "email": "ofiara@example.com", "password": "zgaduje-haslo-{}".format(attempt)
+                "email": "victim@example.com", "password": "guessing-{}".format(attempt)
             })
             codes.append(code)
-        check(codes[:10] == [401] * 10, "pierwsze 10 prob to zwykle odmowy")
-        check(codes[10] == 429, "11. proba zablokowana limitem")
+        check(codes[:10] == [401] * 10, "the first 10 attempts are ordinary refusals")
+        check(codes[10] == 429, "the 11th attempt is rate-limited")
+
+        print("\n[16] Language negotiation")
+        polish = Client(BASE)
+        status, body = polish.call("POST", "/api/auth/login",
+                                   {"email": ADMIN_EMAIL, "password": "wrong-password-here"})
+        english_message = body["detail"]
+
+        class PolishClient(Client):
+            def _headers(self, extra=None):
+                headers = super()._headers(extra)
+                headers["Accept-Language"] = "pl-PL,pl;q=0.9"
+                return headers
+
+        pl_client = PolishClient(BASE)
+        status, body = pl_client.call("POST", "/api/auth/login",
+                                      {"email": "someone@example.com", "password": "wrong-password"})
+        check(body["detail"] != english_message, "Accept-Language changes the API message language")
+        check("hasło" in body["detail"], "the Polish message actually comes back in Polish")
 
     finally:
         server.terminate()
@@ -497,7 +520,7 @@ def main() -> int:
             server.kill()
         shutil.rmtree(str(workdir), ignore_errors=True)
 
-    print("\n{}\nZdane: {}   Niezdane: {}".format("-" * 50, passed, failed))
+    print("\n{}\nPassed: {}   Failed: {}".format("-" * 50, passed, failed))
     return 1 if failed else 0
 
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Wypełnia bibliotekę przykładowymi modelami - do obejrzenia, jak to działa.
+"""Fill the library with a few sample models, to see the thing working.
 
     ./.venv/bin/python tools/seed_demo.py
 
-Generuje kilka prostych brył jako binarne pliki STL, wrzuca je do biblioteki
-i - jeśli w środowisku jest klucz prywatny (tryb online) - od razu podpisuje.
-Do usunięcia, gdy wgrasz własne modele.
+Generates a handful of simple solids as binary STL files, puts them in the
+library and - if a private key is present in the environment (online mode) -
+signs them straight away. Delete this once you upload your own models.
 """
 
 import math
@@ -94,19 +94,22 @@ def hook(width=30.0, height=45.0, depth=12.0, plate=4.0):
         for face in corners:
             quad(triangles, *face)
 
-    box(0, 0, 0, width, height, plate)                       # plecy
-    box(0, 0, 0, width, plate, depth)                        # ramię
-    box(0, 0, depth - plate, width, plate * 3, depth)        # zadarty koniec
+    box(0, 0, 0, width, height, plate)                       # back plate
+    box(0, 0, 0, width, plate, depth)                        # arm
+    box(0, 0, depth - plate, width, plate * 3, depth)        # upturned tip
     return triangles
 
 
 MODELS = [
-    ("Pierscien testowy", "pierscien", "Torus do kalibracji ekstrudera. Druk bez podpor, 0.2 mm warstwa.",
-     "kalibracja", torus()),
-    ("Kolo zebate M2 z14", "kolo-zebate", "Proste kolo zebate, modul 2, 14 zebow, otwor 6 mm.",
-     "mechanika", gear()),
-    ("Wieszak scienny", "wieszak", "Haczyk na sciane, mocowanie na dwie sruby. PETG, 30% wypelnienia.",
-     "akcesoria", hook()),
+    ("Calibration ring", "calibration-ring",
+     "A torus for extruder calibration. Prints without supports, 0.2 mm layers.",
+     "calibration", torus()),
+    ("Spur gear M2 z14", "spur-gear-m2-z14",
+     "Plain spur gear, module 2, 14 teeth, 6 mm bore.",
+     "mechanical", gear()),
+    ("Wall hook", "wall-hook",
+     "Wall-mounted hook, two screw holes. PETG, 30% infill.",
+     "accessories", hook()),
 ]
 
 
@@ -114,12 +117,12 @@ def main() -> int:
     db.init()
     admin = db.query_one("SELECT id FROM users WHERE is_admin = 1 ORDER BY id LIMIT 1")
     if admin is None:
-        print("Najpierw utworz konto administratora (STL_ADMIN_EMAIL / STL_ADMIN_PASSWORD).")
+        print("Create an administrator account first (STL_ADMIN_EMAIL / STL_ADMIN_PASSWORD).")
         return 1
 
     for title, slug, description, category, triangles in MODELS:
         if db.query_one("SELECT id FROM models WHERE slug = ?", (slug,)):
-            print("pomijam (juz jest): {}".format(slug))
+            print("skipping (already present): {}".format(slug))
             continue
 
         model_id = db.execute(
@@ -137,9 +140,9 @@ def main() -> int:
         )
 
         row = db.query_one("SELECT * FROM files WHERE id = ?", (file_id,))
-        signed, message = integrity.sign_file_row(row, slug)
-        print("{:22} {} trojkatow  sha256={}  {}".format(
-            slug, count, sha256_hex[:16], "podpisany" if signed else message))
+        signed, note = integrity.sign_file_row(row, slug)
+        print("{:22} {} triangles  sha256={}  {}".format(
+            slug, count, sha256_hex[:16], "signed" if signed else note))
 
     return 0
 

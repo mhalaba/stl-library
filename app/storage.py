@@ -1,12 +1,12 @@
-"""Skladowanie plikow adresowane trescia (content-addressed storage).
+"""Content-addressed file storage.
 
-Sciezka pliku wynika z jego wlasnego SHA-256:
+A file's path is derived from its own SHA-256:
 
     storage/ab/cd/abcd....stl
 
-Konsekwencja jest taka, ze podmiana zawartosci pliku od razu rozjezdza sie ze
-sciezka, pod ktora ten plik lezy - wykrywalne bez zagladania do bazy danych.
-Dodatkowo ten sam plik wgrany dwa razy zajmuje miejsce raz.
+Two consequences. Swapping a file's content immediately puts it out of step
+with the path it lives under — detectable without consulting the database at
+all. And the same file uploaded twice occupies space once.
 """
 
 import os
@@ -14,13 +14,22 @@ import shutil
 import struct
 import tempfile
 from pathlib import Path
-from typing import BinaryIO, Optional, Tuple
+from typing import Any, BinaryIO, Dict, Optional, Tuple
 
 from . import config, security
 
+# A problem is reported as (message key, format parameters) so the caller can
+# render it in the reader's language. See app/messages.py.
+Problem = Tuple[str, Dict[str, Any]]
+
 
 class InvalidSTL(Exception):
-    pass
+    """Raised when an upload is not a usable STL file."""
+
+    def __init__(self, key: str, **params: Any):
+        super().__init__(key)
+        self.key = key
+        self.params = params
 
 
 def storage_path_for(sha256_hex: str) -> Path:
@@ -32,36 +41,37 @@ def relative_path_for(sha256_hex: str) -> str:
 
 
 def absolute_path(relative: str) -> Path:
-    """Skleja sciezke wzgledna z katalogiem storage i pilnuje, zeby wynik
-    nie wyszedl poza niego (ochrona przed '../' w bazie)."""
+    """Join a stored relative path with the storage root, refusing anything that
+    escapes it — a database row must never be able to point at /etc/passwd."""
     resolved = (config.STORAGE_DIR / relative).resolve()
     root = config.STORAGE_DIR.resolve()
     if root != resolved and root not in resolved.parents:
-        raise ValueError("sciezka poza katalogiem storage: {}".format(relative))
+        raise ValueError("path outside storage directory: {}".format(relative))
     return resolved
 
 
 def inspect_stl(path: Path) -> int:
-    """Sprawdza, czy plik naprawde jest STL-em, i zwraca liczbe trojkatow.
+    """Check that the file really is an STL and return its triangle count.
 
-    Rzuca InvalidSTL, jesli struktura sie nie zgadza. To nie jest zabezpieczenie
-    kryptograficzne, tylko filtr na smieci i pliki podszywajace sie pod STL.
+    Raises InvalidSTL if the structure does not add up. This is a filter against
+    junk and files merely named `.stl`, not a security control — that is what
+    the signature is for.
     """
     size = path.stat().st_size
     if size < 15:
-        raise InvalidSTL("plik jest za maly, zeby byc STL-em")
+        raise InvalidSTL("upload.too_small")
 
     with open(path, "rb") as handle:
         header = handle.read(84)
 
-        # Wariant binarny: 80 bajtow naglowka + uint32 z liczba trojkatow,
-        # a dalej dokladnie 50 bajtow na trojkat.
+        # Binary form: 80-byte header, uint32 triangle count, then exactly
+        # 50 bytes per triangle.
         if len(header) == 84:
             (count,) = struct.unpack("<I", header[80:84])
             if size == 84 + count * 50 and count > 0:
                 return count
 
-        # Wariant ASCII: zaczyna sie od "solid" i zawiera "facet normal".
+        # ASCII form: starts with "solid" and contains "facet normal" lines.
         handle.seek(0)
         head = handle.read(2048).lstrip()
         if head[:5].lower() == b"solid":
@@ -72,17 +82,17 @@ def inspect_stl(path: Path) -> int:
                     facets += 1
             if facets > 0:
                 return facets
-            raise InvalidSTL("plik ASCII zaczyna sie od 'solid', ale nie ma zadnej sciany")
+            raise InvalidSTL("upload.ascii_no_facet")
 
-    raise InvalidSTL("nierozpoznany format - to nie jest poprawny plik STL")
+    raise InvalidSTL("upload.unknown_format")
 
 
 def store_upload(source: BinaryIO, max_bytes: int) -> Tuple[str, int, int, str, bool]:
-    """Zapisuje strumien do storage.
+    """Write a stream into storage.
 
-    Zwraca (sha256, rozmiar, liczba trojkatow, sciezka wzgledna, czy_juz_byl).
-    Plik ląduje najpierw w pliku tymczasowym: dopiero po policzeniu hasha i
-    walidacji STL trafia na docelowa sciezke.
+    Returns (sha256, size, triangle count, relative path, was_already_present).
+    The upload lands in a temporary file first; only after hashing and STL
+    validation does it move to its final path.
     """
     config.STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     tmp_fd, tmp_name = tempfile.mkstemp(dir=str(config.STORAGE_DIR), suffix=".part")
@@ -97,26 +107,24 @@ def store_upload(source: BinaryIO, max_bytes: int) -> Tuple[str, int, int, str, 
                     break
                 written += len(chunk)
                 if written > max_bytes:
-                    raise InvalidSTL(
-                        "plik przekracza limit {} MB".format(max_bytes // (1024 * 1024))
-                    )
+                    raise InvalidSTL("upload.too_large", limit=max_bytes // (1024 * 1024))
                 out.write(chunk)
 
         if written == 0:
-            raise InvalidSTL("pusty plik")
+            raise InvalidSTL("upload.empty")
 
         triangles = inspect_stl(tmp_path)
         sha256_hex, size = security.sha256_file(tmp_path)
         target = storage_path_for(sha256_hex)
 
         if target.exists():
-            # Ta sama tresc juz jest w bibliotece - zostawiamy oryginal.
+            # Identical content is already in the library; keep the original.
             tmp_path.unlink()
             return sha256_hex, size, triangles, relative_path_for(sha256_hex), True
 
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(tmp_path), str(target))
-        os.chmod(str(target), 0o440)  # tylko do odczytu
+        os.chmod(str(target), 0o440)  # read-only
         return sha256_hex, size, triangles, relative_path_for(sha256_hex), False
     except Exception:
         if tmp_path.exists():
@@ -124,22 +132,23 @@ def store_upload(source: BinaryIO, max_bytes: int) -> Tuple[str, int, int, str, 
         raise
 
 
-def verify_stored_file(relative: str, expected_sha256: str) -> Tuple[bool, Optional[str]]:
-    """Przelicza SHA-256 pliku na dysku i porownuje z oczekiwanym.
+def verify_stored_file(relative: str, expected_sha256: str) -> Tuple[bool, Optional[Problem]]:
+    """Re-hash the file on disk and compare it against the expected digest.
 
-    Zwraca (czy_ok, komunikat_bledu).
+    Returns (ok, problem). `problem` is a (message key, parameters) pair.
     """
     try:
         path = absolute_path(relative)
-    except ValueError as exc:
-        return False, str(exc)
+    except ValueError:
+        return False, ("storage.path_outside", {"path": relative})
 
     if not path.exists():
-        return False, "plik nie istnieje na dysku"
+        return False, ("storage.missing", {})
 
     actual, _ = security.sha256_file(path)
     if actual != expected_sha256:
-        return False, "SHA-256 sie nie zgadza (na dysku {}, oczekiwano {})".format(
-            actual[:16], expected_sha256[:16]
+        return False, (
+            "storage.hash_mismatch",
+            {"actual": actual[:16], "expected": expected_sha256[:16]},
         )
     return True, None

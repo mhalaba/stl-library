@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Testy jednostkowe warstwy kryptograficznej i magazynu plikow.
+"""Unit tests for the crypto layer and the storage layer.
 
     ./.venv/bin/python tests/unit.py
 
-Nie podnosza serwera - sprawdzaja same funkcje, ktorym e2e.py ufa. Tutaj lapie
-sie rzeczy, ktore przez HTTP sa trudne do wywolania: token podpisany do innego
-celu, manifest z przestawionymi kluczami, sciezka wychodzaca poza magazyn.
+These do not start a server - they exercise the functions e2e.py relies on.
+This is where the things that are awkward to trigger over HTTP get caught: a
+token signed for a different purpose, a manifest with reordered keys, a path
+that escapes the storage directory.
 """
 
 import os
@@ -18,10 +19,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-# Konfiguracja czytana jest przy imporcie, wiec musi byc gotowa wczesniej.
+# Configuration is read at import time, so it has to be in place first.
 WORKDIR = tempfile.mkdtemp(prefix="stl-unit-")
 os.environ["STL_DATA_DIR"] = WORKDIR
-os.environ["STL_SECRET_KEY"] = "sekret-do-testow-jednostkowych"
+os.environ["STL_SECRET_KEY"] = "unit-test-secret"
 os.environ.pop("STL_SIGNING_PRIVATE_KEY", None)
 os.environ.pop("STL_SIGNING_PUBLIC_KEY", None)
 
@@ -50,12 +51,12 @@ def raises(exc_type, fn, label):
         check(True, label)
         return
     except Exception as exc:  # noqa: BLE001
-        check(False, "{} (poleciał {}: {})".format(label, type(exc).__name__, exc))
+        check(False, "{} (raised {}: {})".format(label, type(exc).__name__, exc))
         return
-    check(False, "{} (nie poleciał żaden wyjątek)".format(label))
+    check(False, "{} (nothing was raised)".format(label))
 
 
-# --- Materialy testowe -------------------------------------------------------
+# --- Fixtures ----------------------------------------------------------------
 
 
 def binary_stl(count=2, filler=1.0):
@@ -71,7 +72,7 @@ def binary_stl(count=2, filler=1.0):
     return bytes(out)
 
 
-ASCII_STL = b"""solid prostokat
+ASCII_STL = b"""solid rectangle
   facet normal 0 0 1
     outer loop
       vertex 0 0 0
@@ -86,225 +87,233 @@ ASCII_STL = b"""solid prostokat
       vertex 0 1 0
     endloop
   endfacet
-endsolid prostokat
+endsolid rectangle
 """
 
 
-# --- Hasla -------------------------------------------------------------------
+# --- Passwords ---------------------------------------------------------------
 
 
 def test_passwords():
-    print("\n[1] Hasla")
-    stored = security.hash_password("poprawne-haslo-testowe")
-    check(security.verify_password("poprawne-haslo-testowe", stored), "poprawne haslo przechodzi")
-    check(not security.verify_password("inne-haslo", stored), "bledne haslo odrzucone")
-    check(not security.verify_password("", stored), "puste haslo odrzucone")
+    print("\n[1] Passwords")
+    stored = security.hash_password("a-correct-test-password")
+    check(security.verify_password("a-correct-test-password", stored), "correct password passes")
+    check(not security.verify_password("another-password", stored), "wrong password rejected")
+    check(not security.verify_password("", stored), "empty password rejected")
 
-    other = security.hash_password("poprawne-haslo-testowe")
-    check(stored != other, "ta sama fraza daje inny hash (losowa sol)")
-    check(security.verify_password("poprawne-haslo-testowe", other), "obie wersje weryfikuja sie poprawnie")
+    other = security.hash_password("a-correct-test-password")
+    check(stored != other, "same phrase gives a different hash (random salt)")
+    check(security.verify_password("a-correct-test-password", other), "both hashes verify")
 
-    check(not security.verify_password("cokolwiek", "smieci"), "uszkodzony rekord nie wywala funkcji")
-    check(not security.verify_password("cokolwiek", "md5$1$a$b"), "nieobslugiwany algorytm odrzucony")
-    check(stored.startswith("pbkdf2_sha256$260000$"), "uzyty PBKDF2-SHA256 z 260 000 iteracji")
+    check(not security.verify_password("anything", "garbage"), "damaged record does not crash")
+    check(not security.verify_password("anything", "md5$1$a$b"), "unsupported algorithm rejected")
+    check(stored.startswith("pbkdf2_sha256$260000$"), "PBKDF2-SHA256 with 260,000 iterations")
 
 
-# --- Tokeny HMAC -------------------------------------------------------------
+# --- HMAC tokens -------------------------------------------------------------
 
 
 def test_tokens():
-    print("\n[2] Tokeny HMAC")
+    print("\n[2] HMAC tokens")
     token = security.make_token({"uid": 7}, 3600, "session")
     body = security.read_token(token, "session")
-    check(body is not None and body["uid"] == 7, "token odczytany poprawnie")
+    check(body is not None and body["uid"] == 7, "token reads back correctly")
 
     check(security.read_token(token, "download") is None,
-          "token sesji nie dziala jako token pobrania")
+          "a session token does not work as a download token")
 
     expired = security.make_token({"uid": 7}, -10, "session")
-    check(security.read_token(expired, "session") is None, "token po terminie odrzucony")
+    check(security.read_token(expired, "session") is None, "expired token rejected")
 
     payload, signature = token.split(".", 1)
     forged = security.b64e(b'{"exp":9999999999,"uid":1}') + "." + signature
-    check(security.read_token(forged, "session") is None, "podmieniona tresc przy starym podpisie odrzucona")
+    check(security.read_token(forged, "session") is None,
+          "swapped payload with the old signature rejected")
 
-    check(security.read_token(payload + ".AAAA", "session") is None, "zmyslony podpis odrzucony")
-    check(security.read_token("bez-kropki", "session") is None, "token bez separatora nie wywala funkcji")
-    check(security.read_token("", "session") is None, "pusty token odrzucony")
-    check(security.read_token("!!!.!!!", "session") is None, "smieci base64 nie wywalaja funkcji")
+    check(security.read_token(payload + ".AAAA", "session") is None, "made-up signature rejected")
+    check(security.read_token("no-separator", "session") is None, "token without a dot does not crash")
+    check(security.read_token("", "session") is None, "empty token rejected")
+    check(security.read_token("!!!.!!!", "session") is None, "base64 garbage does not crash")
 
-    # Token musi byc zwiazany z konkretnym plikiem.
     download = security.make_token({"fid": 5, "uid": 1, "sha": "abc"}, 300, "download")
     parsed = security.read_token(download, "download")
-    check(parsed["fid"] == 5 and parsed["sha"] == "abc", "token pobrania niesie plik i hash")
+    check(parsed["fid"] == 5 and parsed["sha"] == "abc", "download token carries file and digest")
 
 
-# --- Manifest i podpis -------------------------------------------------------
+# --- Manifest and signature --------------------------------------------------
 
 
 def test_manifest():
-    print("\n[3] Manifest i podpis Ed25519")
+    print("\n[3] Manifest and Ed25519 signature")
     private = Ed25519PrivateKey.generate()
     public = private.public_key()
     pub_hex = public.public_bytes_raw().hex()
 
-    manifest = security.build_manifest("wieszak", "wieszak.stl", 1848, "a" * 64, 1754136000,
-                                       security.key_id(pub_hex))
+    manifest = security.build_manifest("wall-hook", "wall-hook.stl", 1848, "a" * 64,
+                                       1754136000, security.key_id(pub_hex))
 
-    # Kanonikalizacja nie moze zalezec od kolejnosci wstawiania kluczy.
+    # Canonicalisation must not depend on insertion order.
     shuffled = {}
     for key in reversed(list(manifest.keys())):
         shuffled[key] = manifest[key]
     check(security.canonical(manifest) == security.canonical(shuffled),
-          "kanoniczny JSON nie zalezy od kolejnosci kluczy")
-    check(b" " not in security.canonical(manifest), "kanoniczny JSON nie ma spacji")
+          "canonical JSON is independent of key order")
+    check(b" " not in security.canonical(manifest), "canonical JSON contains no spaces")
 
     signature = security.sign_manifest(manifest, private)
-    check(security.verify_manifest(manifest, signature, public), "poprawny podpis przechodzi")
+    check(security.verify_manifest(manifest, signature, public), "a valid signature passes")
 
     tampered = dict(manifest, sha256="b" * 64)
     check(not security.verify_manifest(tampered, signature, public),
-          "zmiana sha256 w manifescie uniewaznia podpis")
+          "changing sha256 invalidates the signature")
 
-    renamed = dict(manifest, filename="cos-innego.stl")
+    renamed = dict(manifest, filename="something-else.stl")
     check(not security.verify_manifest(renamed, signature, public),
-          "zmiana nazwy pliku uniewaznia podpis")
+          "changing the filename invalidates the signature")
 
     intruder = Ed25519PrivateKey.generate().public_key()
     check(not security.verify_manifest(manifest, signature, intruder),
-          "obcy klucz nie potwierdza podpisu")
+          "a foreign key does not confirm the signature")
 
-    check(not security.verify_manifest(manifest, "nie-hex", public),
-          "podpis nie bedacy hexem nie wywala funkcji")
+    check(not security.verify_manifest(manifest, "not-hex", public),
+          "a non-hex signature does not crash")
     check(not security.verify_manifest(manifest, "ab" * 32, public),
-          "podpis o zlej dlugosci odrzucony")
+          "a signature of the wrong length is rejected")
 
-    # Znaki spoza ASCII musza przetrwac droge tam i z powrotem.
+    # Non-ASCII characters have to survive the round trip.
     polish = security.build_manifest("zabka", "żółć-ćma.stl", 10, "c" * 64, 1, "0" * 16)
     polish_sig = security.sign_manifest(polish, private)
-    check(security.verify_manifest(polish, polish_sig, public), "polskie znaki w nazwie pliku dzialaja")
+    check(security.verify_manifest(polish, polish_sig, public),
+          "non-ASCII characters in a filename work")
 
-    check(len(security.key_id(pub_hex)) == 16, "key_id ma 16 znakow")
-    check(security.key_id(pub_hex) == security.key_id(pub_hex), "key_id jest stabilne")
+    check(len(security.key_id(pub_hex)) == 16, "key_id is 16 characters")
+    check(security.key_id(pub_hex) == security.key_id(pub_hex), "key_id is stable")
 
 
-# --- Rozpoznawanie STL -------------------------------------------------------
+# --- STL detection -----------------------------------------------------------
 
 
 def test_stl_detection():
-    print("\n[4] Walidacja plikow STL")
-    tmp = Path(WORKDIR) / "probki"
+    print("\n[4] STL validation")
+    tmp = Path(WORKDIR) / "samples"
     tmp.mkdir(exist_ok=True)
 
     binary = tmp / "bin.stl"
     binary.write_bytes(binary_stl(4))
-    check(storage.inspect_stl(binary) == 4, "binarny STL: policzone 4 trojkaty")
+    check(storage.inspect_stl(binary) == 4, "binary STL: 4 triangles counted")
 
     ascii_file = tmp / "ascii.stl"
     ascii_file.write_bytes(ASCII_STL)
-    check(storage.inspect_stl(ascii_file) == 2, "ASCII STL: policzone 2 sciany")
+    check(storage.inspect_stl(ascii_file) == 2, "ASCII STL: 2 facets counted")
 
     junk = tmp / "junk.stl"
-    junk.write_bytes(b"to nie jest STL, tylko zwykly tekst o dlugosci ponad 84 bajty" * 3)
-    raises(storage.InvalidSTL, lambda: storage.inspect_stl(junk), "smieci odrzucone")
+    junk.write_bytes(b"this is not an STL, just plain text longer than 84 bytes" * 3)
+    raises(storage.InvalidSTL, lambda: storage.inspect_stl(junk), "junk rejected")
 
     tiny = tmp / "tiny.stl"
     tiny.write_bytes(b"solid")
-    raises(storage.InvalidSTL, lambda: storage.inspect_stl(tiny), "plik za maly odrzucony")
+    raises(storage.InvalidSTL, lambda: storage.inspect_stl(tiny), "file too small rejected")
 
-    # Naglowek obiecuje 100 trojkatow, a plik ich nie ma.
+    # The header promises 100 triangles, the file does not have them.
     truncated = tmp / "truncated.stl"
     data = bytearray(binary_stl(4))
     data[80:84] = (100).to_bytes(4, "little")
     truncated.write_bytes(bytes(data))
     raises(storage.InvalidSTL, lambda: storage.inspect_stl(truncated),
-           "binarny STL z zawyzona liczba trojkatow odrzucony")
+           "binary STL with an inflated triangle count rejected")
 
-    empty_ascii = tmp / "pusty.stl"
-    empty_ascii.write_bytes(b"solid nic\nendsolid nic\n" + b" " * 100)
+    empty_ascii = tmp / "empty.stl"
+    empty_ascii.write_bytes(b"solid nothing\nendsolid nothing\n" + b" " * 100)
     raises(storage.InvalidSTL, lambda: storage.inspect_stl(empty_ascii),
-           "ASCII bez ani jednej sciany odrzucony")
+           "ASCII STL without a single facet rejected")
+
+    try:
+        storage.inspect_stl(junk)
+    except storage.InvalidSTL as exc:
+        check(exc.key == "upload.unknown_format", "the exception carries a message key")
 
 
-# --- Magazyn -----------------------------------------------------------------
+# --- Storage -----------------------------------------------------------------
 
 
 def test_storage():
-    print("\n[5] Magazyn adresowany trescia")
+    print("\n[5] Content-addressed storage")
     content = binary_stl(6, filler=3.5)
     sha, size, triangles, relative, duplicate = storage.store_upload(BytesIO(content), 10 * 1024 * 1024)
 
-    check(triangles == 6, "liczba trojkatow zapisana")
-    check(size == len(content), "rozmiar sie zgadza")
-    check(duplicate is False, "pierwsze wgranie nie jest duplikatem")
+    check(triangles == 6, "triangle count recorded")
+    check(size == len(content), "size matches")
+    check(duplicate is False, "first upload is not a duplicate")
     check(relative.startswith("{}/{}/".format(sha[0:2], sha[2:4])),
-          "sciezka wyprowadzona z hasha: {}".format(relative))
-    check(storage.absolute_path(relative).exists(), "plik faktycznie lezy na dysku")
+          "path derived from the digest: {}".format(relative))
+    check(storage.absolute_path(relative).exists(), "the file really is on disk")
 
     sha2, _, _, relative2, duplicate2 = storage.store_upload(BytesIO(content), 10 * 1024 * 1024)
     check(duplicate2 is True and sha2 == sha and relative2 == relative,
-          "ta sama tresc rozpoznana jako duplikat")
+          "identical content recognised as a duplicate")
 
     ok, problem = storage.verify_stored_file(relative, sha)
-    check(ok and problem is None, "weryfikacja nietknietego pliku przechodzi")
+    check(ok and problem is None, "an untouched file verifies")
 
     ok, problem = storage.verify_stored_file(relative, "f" * 64)
-    check(not ok and "SHA-256" in problem, "niezgodny hash wykryty")
+    check(not ok and problem[0] == "storage.hash_mismatch", "digest mismatch detected")
 
-    ok, problem = storage.verify_stored_file("aa/bb/nie-ma-takiego.stl", sha)
-    check(not ok and "nie istnieje" in problem, "brak pliku zglaszany, nie wyjatek")
+    ok, problem = storage.verify_stored_file("aa/bb/no-such-file.stl", sha)
+    check(not ok and problem[0] == "storage.missing", "missing file reported, not raised")
 
-    # Podmiana pliku pod istniejaca sciezka.
+    # Swap the content under an existing path.
     target = storage.absolute_path(relative)
     os.chmod(str(target), 0o644)
     target.write_bytes(binary_stl(6, filler=99.0))
     ok, problem = storage.verify_stored_file(relative, sha)
-    check(not ok, "podmieniona tresc pod ta sama sciezka wykryta")
+    check(not ok, "swapped content under the same path detected")
 
     raises(storage.InvalidSTL,
            lambda: storage.store_upload(BytesIO(binary_stl(200)), 100),
-           "przekroczony limit rozmiaru odrzucony")
+           "exceeding the size limit is rejected")
     raises(storage.InvalidSTL, lambda: storage.store_upload(BytesIO(b""), 1000),
-           "pusty strumien odrzucony")
+           "empty stream rejected")
 
     leftovers = list(config.STORAGE_DIR.glob("*.part"))
-    check(not leftovers, "po nieudanym wgraniu nie zostaja pliki tymczasowe")
+    check(not leftovers, "a failed upload leaves no temporary files behind")
 
 
 def test_path_traversal():
-    print("\n[6] Sciezki poza magazynem")
+    print("\n[6] Paths outside the storage directory")
     for evil in ["../../../../etc/passwd", "..", "aa/../../../../tmp/x", "/etc/passwd"]:
         raises(ValueError, lambda e=evil: storage.absolute_path(e),
-               "odrzucona sciezka: {}".format(evil))
+               "rejected path: {}".format(evil))
+
+    ok, problem = storage.verify_stored_file("../../../../etc/hosts", "a" * 64)
+    check(not ok and problem[0] == "storage.path_outside",
+          "verify_stored_file reports an escaping path instead of reading it")
 
     inside = storage.relative_path_for("d" * 64)
-    check(storage.absolute_path(inside).is_relative_to(config.STORAGE_DIR)
-          if hasattr(Path, "is_relative_to")
-          else str(storage.absolute_path(inside)).startswith(str(config.STORAGE_DIR)),
-          "poprawna sciezka wewnatrz magazynu przechodzi")
+    check(str(storage.absolute_path(inside)).startswith(str(config.STORAGE_DIR)),
+          "a valid path inside the storage directory passes")
 
 
-# --- Weryfikacja przed wydaniem pliku ----------------------------------------
+# --- The check before a file is released -------------------------------------
 
 
 def test_integrity():
-    print("\n[7] Kontrola przed wydaniem pliku")
+    print("\n[7] The check before a file is released")
     import json
 
     private = Ed25519PrivateKey.generate()
     pub_hex = private.public_key().public_bytes_raw().hex()
-    config.SIGNING_PUBLIC_KEY_HEX = pub_hex  # podmiana klucza serwera na czas testu
+    config.SIGNING_PUBLIC_KEY_HEX = pub_hex  # stand in as the server key for this test
 
     content = binary_stl(3, filler=7.0)
     sha, size, _, relative, _ = storage.store_upload(BytesIO(content), 10 * 1024 * 1024)
 
-    manifest = security.build_manifest("model", "plik.stl", size, sha, 1700000000,
+    manifest = security.build_manifest("model", "file.stl", size, sha, 1700000000,
                                        security.key_id(pub_hex))
     signature = security.sign_manifest(manifest, private)
 
     def row(**overrides):
         base = {
-            "id": 1, "status": "signed", "filename": "plik.stl", "size": size,
+            "id": 1, "status": "signed", "filename": "file.stl", "size": size,
             "sha256": sha, "storage_path": relative, "signature": signature,
             "key_id": manifest["key_id"],
             "manifest": json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False),
@@ -314,71 +323,102 @@ def test_integrity():
 
     try:
         integrity.check_file(row(), deep=True)
-        check(True, "poprawny plik przechodzi pelna kontrole")
+        check(True, "a sound file passes the full check")
     except integrity.IntegrityError as exc:
-        check(False, "poprawny plik przechodzi pelna kontrole ({})".format(exc.reason))
+        check(False, "a sound file passes the full check ({})".format(exc.key))
 
-    raises(integrity.IntegrityError, lambda: integrity.check_file(row(status="pending")),
-           "plik bez podpisu nie przechodzi")
-    raises(integrity.IntegrityError, lambda: integrity.check_file(row(status="quarantined")),
-           "plik w kwarantannie nie przechodzi")
-    raises(integrity.IntegrityError, lambda: integrity.check_file(row(manifest=None)),
-           "brak manifestu wykryty")
-    raises(integrity.IntegrityError, lambda: integrity.check_file(row(manifest="{niepoprawny json")),
-           "uszkodzony manifest nie wywala serwera")
-    raises(integrity.IntegrityError, lambda: integrity.check_file(row(sha256="e" * 64)),
-           "rozjazd manifestu z baza wykryty (podmieniony hash w bazie)")
-    raises(integrity.IntegrityError, lambda: integrity.check_file(row(filename="podstawiony.stl")),
-           "rozjazd nazwy pliku wykryty")
-    raises(integrity.IntegrityError, lambda: integrity.check_file(row(size=size + 1)),
-           "rozjazd rozmiaru wykryty")
-    raises(integrity.IntegrityError, lambda: integrity.check_file(row(signature=None)),
-           "brak podpisu wykryty")
-    raises(integrity.IntegrityError,
-           lambda: integrity.check_file(row(signature=Ed25519PrivateKey.generate()
-                                            .sign(security.canonical(manifest)).hex())),
-           "podpis obcym kluczem odrzucony")
+    def expect_key(expected, file_row, label, deep=True):
+        try:
+            integrity.check_file(file_row, deep=deep)
+        except integrity.IntegrityError as exc:
+            check(exc.key == expected, "{} [{}]".format(label, exc.key))
+            return
+        check(False, "{} (nothing was raised)".format(label))
+
+    expect_key("integrity.unsigned", row(status="pending"), "an unsigned file does not pass")
+    expect_key("integrity.quarantined", row(status="quarantined"), "a quarantined file does not pass")
+    expect_key("integrity.manifest_missing", row(manifest=None), "missing manifest detected")
+    expect_key("integrity.manifest_missing", row(manifest="{broken json"),
+               "damaged manifest does not crash the server")
+    expect_key("integrity.catalog_mismatch", row(sha256="e" * 64),
+               "manifest/database divergence detected (digest edited in the database)")
+    expect_key("integrity.catalog_mismatch", row(filename="substituted.stl"),
+               "filename divergence detected")
+    expect_key("integrity.catalog_mismatch", row(size=size + 1), "size divergence detected")
+    expect_key("integrity.signature_missing", row(signature=None), "missing signature detected")
+    expect_key(
+        "integrity.signature_invalid",
+        row(signature=Ed25519PrivateKey.generate().sign(security.canonical(manifest)).hex()),
+        "signature from a foreign key rejected",
+    )
 
     other_schema = dict(manifest, schema="stl-library/manifest/v999")
-    raises(integrity.IntegrityError,
-           lambda: integrity.check_file(row(manifest=json.dumps(other_schema, sort_keys=True,
-                                                                separators=(",", ":")))),
-           "nieznana wersja manifestu odrzucona")
+    expect_key(
+        "integrity.schema_unknown",
+        row(manifest=json.dumps(other_schema, sort_keys=True, separators=(",", ":"))),
+        "unknown manifest version rejected",
+    )
 
-    # Manifest podpisany kluczem, ktorego serwer juz nie uzywa.
+    # A manifest signed with a key the server no longer uses.
     config.SIGNING_PUBLIC_KEY_HEX = Ed25519PrivateKey.generate().public_key().public_bytes_raw().hex()
-    raises(integrity.IntegrityError, lambda: integrity.check_file(row()),
-           "manifest z nieaktualnym key_id odrzucony")
+    expect_key("integrity.key_mismatch", row(), "manifest with a stale key_id rejected")
     config.SIGNING_PUBLIC_KEY_HEX = pub_hex
 
-    # Plik podmieniony na dysku - lapie to dopiero kontrola gleboka.
+    # A file swapped on disk - only the deep check catches this.
     target = storage.absolute_path(relative)
     os.chmod(str(target), 0o644)
     target.write_bytes(binary_stl(3, filler=123.0))
     try:
         integrity.check_file(row(), deep=False)
-        check(True, "kontrola plytka nie rusza dysku")
+        check(True, "the shallow check does not touch the disk")
     except integrity.IntegrityError:
-        check(False, "kontrola plytka nie rusza dysku")
-    raises(integrity.IntegrityError, lambda: integrity.check_file(row(), deep=True),
-           "kontrola gleboka lapie podmiane pliku na dysku")
+        check(False, "the shallow check does not touch the disk")
+    expect_key("integrity.disk_mismatch", row(), "the deep check catches a file swapped on disk")
+
+    # The reason has to render in both languages.
+    try:
+        integrity.check_file(row(), deep=True)
+    except integrity.IntegrityError as exc:
+        check(exc.reason("en") != exc.reason("pl"), "the reason renders in both languages")
+        check("SHA-256" in exc.reason("en"), "the English reason names the digest")
 
     check(integrity.sidecar(row())["public_key"] == pub_hex,
-          "sidecar .sig.json niesie klucz publiczny")
+          "the .sig.json sidecar carries the public key")
 
 
-# --- Slug --------------------------------------------------------------------
+# --- Slugs -------------------------------------------------------------------
 
 
 def test_slug():
-    print("\n[8] Adresy modeli")
+    print("\n[8] Model addresses")
     from app.main import slugify
 
-    check(slugify("Uchwyt na słuchawki") == "uchwyt-na-sluchawki", "polskie znaki zamienione na ASCII")
-    check(slugify("Koło zębate M2 / z14") == "kolo-zebate-m2-z14", "znaki specjalne zwiniete do myslnika")
-    check(slugify("  ---  ").startswith("model-"), "sam separator daje zapasowa nazwe")
-    check("/" not in slugify("a/b/../c"), "slug nie przenosi separatora sciezki")
-    check(slugify("ŻÓŁĆ") == "zolc", "wielkie litery i ogonki")
+    check(slugify("Uchwyt na słuchawki") == "uchwyt-na-sluchawki", "Polish letters folded to ASCII")
+    check(slugify("Koło zębate M2 / z14") == "kolo-zebate-m2-z14", "special characters collapse to a dash")
+    check(slugify("  ---  ").startswith("model-"), "a separator-only title gets a fallback name")
+    check("/" not in slugify("a/b/../c"), "a slug never carries a path separator")
+    check(slugify("ŻÓŁĆ") == "zolc", "uppercase and diacritics")
+    check(slugify("Straße Ø") == "strasse-o", "German and Nordic letters handled too")
+
+
+# --- Message catalogue -------------------------------------------------------
+
+
+def test_messages():
+    print("\n[9] Message catalogue")
+    from app import messages
+
+    check(messages.t("auth.required", "en") != messages.t("auth.required", "pl"),
+          "both languages are present")
+    check(messages.t("no.such.key", "en") == "no.such.key", "an unknown key returns the key itself")
+    check("5" in messages.t("upload.too_large", "en", limit=5), "parameters get substituted")
+    check(messages.t("upload.too_large", "en") != "", "a missing parameter does not crash")
+
+    missing = [
+        key for key, entry in messages.CATALOG.items()
+        if not all(lang in entry and entry[lang] for lang in messages.SUPPORTED)
+    ]
+    check(not missing, "every key is translated into every language ({})".format(missing[:3]))
 
 
 def main():
@@ -391,10 +431,11 @@ def main():
         test_path_traversal()
         test_integrity()
         test_slug()
+        test_messages()
     finally:
         shutil.rmtree(WORKDIR, ignore_errors=True)
 
-    print("\n{}\nZdane: {}   Niezdane: {}".format("-" * 50, passed, failed))
+    print("\n{}\nPassed: {}   Failed: {}".format("-" * 50, passed, failed))
     return 1 if failed else 0
 
 

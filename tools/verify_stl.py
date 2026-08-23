@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Sprawdza, czy pobrany plik STL jest tym, ktory wydala biblioteka.
+"""Check that a downloaded STL file is the one the library published.
 
     python3 verify_stl.py model.stl model.stl.sig.json
 
-Skrypt nie laczy sie z siecia i nie ma zadnych zaleznosci - dziala na samym
-Pythonie 3. Jesli w systemie jest biblioteka `cryptography`, uzyje jej;
-w przeciwnym razie skorzysta z wbudowanej implementacji Ed25519 (RFC 8032).
+The script never touches the network and has no dependencies - plain Python 3
+is enough. If the `cryptography` library happens to be installed it will use it;
+otherwise it falls back to the Ed25519 verifier built in below (RFC 8032).
 
-Opcjonalnie mozna podac oczekiwany klucz publiczny, zeby nie ufac temu, ktory
-przyszedl razem z plikiem:
+You can pass the public key you expect, rather than trusting the one that came
+alongside the file:
 
     python3 verify_stl.py model.stl model.stl.sig.json --pubkey <hex>
 """
@@ -19,7 +19,7 @@ import json
 import sys
 from typing import Any, Dict, Optional
 
-# --- Ed25519 (RFC 8032, tylko weryfikacja) -----------------------------------
+# --- Ed25519 (RFC 8032, verification only) -----------------------------------
 
 _P = 2 ** 255 - 19
 _L = 2 ** 252 + 27742317777372353535851937790883648493
@@ -115,7 +115,7 @@ def ed25519_verify(public_key: bytes, message: bytes, signature: bytes) -> bool:
         return ed25519_verify_pure(public_key, message, signature)
 
 
-# --- Weryfikacja -------------------------------------------------------------
+# --- Verification ------------------------------------------------------------
 
 
 def canonical(manifest: Dict[str, Any]) -> bytes:
@@ -133,10 +133,10 @@ def sha256_file(path: str) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Weryfikacja pliku STL z biblioteki")
-    parser.add_argument("stl", help="pobrany plik .stl")
-    parser.add_argument("sidecar", help="towarzyszacy plik .sig.json")
-    parser.add_argument("--pubkey", help="oczekiwany klucz publiczny (hex)", default=None)
+    parser = argparse.ArgumentParser(description="Verify an STL file from the library")
+    parser.add_argument("stl", help="the downloaded .stl file")
+    parser.add_argument("sidecar", help="the accompanying .sig.json file")
+    parser.add_argument("--pubkey", help="public key you expect (hex)", default=None)
     args = parser.parse_args()
 
     with open(args.sidecar, "r", encoding="utf-8") as handle:
@@ -147,38 +147,38 @@ def main() -> int:
     public_hex = args.pubkey or sidecar.get("public_key")
 
     if not manifest or not signature_hex or not public_hex:
-        print("BLAD: plik .sig.json jest niekompletny.")
+        print("ERROR: the .sig.json file is incomplete.")
         return 2
 
     if args.pubkey and sidecar.get("public_key") and args.pubkey != sidecar["public_key"]:
-        print("BLAD: klucz w pliku .sig.json rozni sie od podanego przez Ciebie.")
-        print("      To znak, ze plik moze pochodzic z podstawionego serwera.")
+        print("ERROR: the key inside .sig.json differs from the one you supplied.")
+        print("       That is a sign the file may come from an impostor server.")
         return 1
 
-    # 1. Podpis manifestu.
+    # 1. Signature over the manifest.
     if not ed25519_verify(
         bytes.fromhex(public_hex), canonical(manifest), bytes.fromhex(signature_hex)
     ):
-        print("BLAD: podpis manifestu jest nieprawidlowy. NIE UZYWAJ tego pliku.")
+        print("ERROR: the manifest signature is invalid. DO NOT USE this file.")
         return 1
 
-    # 2. Zawartosc pliku kontra podpisany manifest.
+    # 2. File contents against the signed manifest.
     actual = sha256_file(args.stl)
     if actual != manifest.get("sha256"):
-        print("BLAD: plik nie zgadza sie z podpisem.")
-        print("  w podpisie: {}".format(manifest.get("sha256")))
-        print("  na dysku:   {}".format(actual))
-        print("NIE UZYWAJ tego pliku - zostal zmieniony po podpisaniu.")
+        print("ERROR: the file does not match its signature.")
+        print("  in the signature: {}".format(manifest.get("sha256")))
+        print("  on disk:          {}".format(actual))
+        print("DO NOT USE this file - it was changed after it was signed.")
         return 1
 
     key_id = hashlib.sha256(bytes.fromhex(public_hex)).hexdigest()[:16]
-    print("OK - plik jest autentyczny.")
-    print("  nazwa:    {}".format(manifest.get("filename")))
-    print("  model:    {}".format(manifest.get("model")))
-    print("  wydawca:  {}".format(manifest.get("publisher")))
-    print("  rozmiar:  {} B".format(manifest.get("size")))
-    print("  sha256:   {}".format(actual))
-    print("  key_id:   {}".format(key_id))
+    print("OK - the file is authentic.")
+    print("  name:      {}".format(manifest.get("filename")))
+    print("  model:     {}".format(manifest.get("model")))
+    print("  publisher: {}".format(manifest.get("publisher")))
+    print("  size:      {} B".format(manifest.get("size")))
+    print("  sha256:    {}".format(actual))
+    print("  key_id:    {}".format(key_id))
     return 0
 
 

@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Generuje pare kluczy Ed25519 dla biblioteki.
+"""Generate an Ed25519 key pair for the library.
 
     python3 tools/keygen.py
 
-Klucz PUBLICZNY (STL_SIGNING_PUBLIC_KEY) idzie na serwer - sluzy do sprawdzania
-podpisow i jest jawny.
+The PUBLIC key (STL_SIGNING_PUBLIC_KEY) goes on the server. It verifies
+signatures and is meant to be public.
 
-Klucz PRYWATNY (STL_SIGNING_PRIVATE_KEY) sluzy do skladania podpisow. Trzymaj go
-poza serwerem: na osobnym komputerze, kluczu sprzetowym albo w menedzerze hasel.
-Jesli wgrasz go na serwer, wlamanie na serwer wystarczy, zeby podmienic plik
-i zlozyc do niego poprawny podpis - a to jest dokladnie to, przed czym ten
-mechanizm ma chronic.
+The PRIVATE key (STL_SIGNING_PRIVATE_KEY) creates signatures. Keep it off the
+server: on a separate machine, a hardware key, or in a password manager. If you
+put it on the server, then breaking into the server is enough to swap a file
+and produce a valid signature for it - which is exactly what this mechanism
+exists to prevent.
 """
 
 import hashlib
@@ -26,16 +26,16 @@ def main() -> int:
     public_hex = public_raw.hex()
     key_id = hashlib.sha256(public_raw).hexdigest()[:16]
 
-    print("Wygenerowano pare kluczy Ed25519.")
-    print("Identyfikator klucza (key_id): {}\n".format(key_id))
-    print("--- NA SERWER (plik .env) ------------------------------------------")
+    print("Ed25519 key pair generated.")
+    print("Key identifier (key_id): {}\n".format(key_id))
+    print("--- FOR THE SERVER (.env) ------------------------------------------")
     print("STL_SIGNING_PUBLIC_KEY={}".format(public_hex))
     print()
-    print("--- TYLKO NA MASZYNIE PODPISUJACEJ - NIE WGRYWAJ NA SERWER ---------")
+    print("--- SIGNING MACHINE ONLY - DO NOT PUT THIS ON THE SERVER -----------")
     print("STL_SIGNING_PRIVATE_KEY={}".format(private_hex))
     print()
-    print("Zgubienie klucza prywatnego oznacza koniecznosc podpisania calej")
-    print("biblioteki od nowa nowym kluczem. Zrob kopie zapasowa offline.")
+    print("Losing the private key means re-signing the whole library with a new")
+    print("one. Keep an offline backup.")
     return 0
 
 

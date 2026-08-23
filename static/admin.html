@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="pl">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Panel administratora — Biblioteka STL</title>
+<title data-i18n-title="title.admin">Administrator panel — STL Library</title>
 <link rel="stylesheet" href="/static/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='4' fill='%234f9cf9'/></svg>">
 </head>
@@ -11,14 +11,15 @@
 
 <header class="top">
   <div class="top-inner">
-    <a class="brand" href="/"><span class="mark"></span> Biblioteka STL</a>
-    <div class="search"><strong>Panel administratora</strong></div>
+    <a class="brand" href="/"><span class="mark"></span><span data-i18n="brand">STL Library</span></a>
+    <div class="search"><strong data-i18n="admin.heading">Administrator panel</strong></div>
     <div class="auth-box" id="auth-box"></div>
   </div>
 </header>
 
 <main class="wrap" id="view"></main>
 
+<script src="/static/i18n.js" defer></script>
 <script src="/static/admin.js" defer></script>
 </body>
 </html>

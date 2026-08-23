@@ -1,29 +1,37 @@
-"""Weryfikacja pliku przed wydaniem go uzytkownikowi.
+"""The check a file goes through before it is handed to anyone.
 
-Kazde pobranie przechodzi przez check_file(). Kolejnosc kontroli jest celowa -
-od najtanszej do najdrozszej, ale zadna nie jest pomijana:
+Every download runs check_file(). The order is deliberate — cheapest first —
+but nothing is skipped:
 
-  1. status w bazie musi byc 'signed'
-  2. manifest musi zgadzac sie z rekordem w bazie (nazwa, rozmiar, hash)
-  3. podpis Ed25519 manifestu musi byc poprawny dla klucza publicznego serwera
-  4. SHA-256 pliku na dysku musi zgadzac sie z tym z podpisanego manifestu
+  1. the database status must be 'signed'
+  2. the manifest must agree with the catalogue row (name, size, digest)
+  3. the Ed25519 signature over the manifest must verify against the server's
+     public key
+  4. the SHA-256 of the file on disk must match the one inside the signed
+     manifest
 
-Punkt 4 jest tym, ktory faktycznie lapie podmieniony plik. Punkt 3 lapie
-sytuacje, w ktorej wlamywacz podmienil plik ORAZ poprawil hash w bazie - bez
-klucza prywatnego nie zlozy pasujacego podpisu.
+Step 4 is what actually catches a swapped file. Step 3 catches the case where
+an intruder swapped the file *and* corrected the digest in the database —
+without the private key they cannot produce a matching signature.
 """
 
 import json
 import time
 from typing import Any, Dict, Optional, Tuple
 
-from . import config, db, security, storage
+from . import config, db, messages, security, storage
 
 
 class IntegrityError(Exception):
-    def __init__(self, reason: str):
-        super().__init__(reason)
-        self.reason = reason
+    """Carries a message key so the reason can be shown in either language."""
+
+    def __init__(self, key: str, **params: Any):
+        super().__init__(key)
+        self.key = key
+        self.params = params
+
+    def reason(self, lang: Optional[str] = None) -> str:
+        return messages.t(self.key, lang, **self.params)
 
 
 def parse_manifest(file_row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -38,79 +46,79 @@ def parse_manifest(file_row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def check_file(file_row: Dict[str, Any], deep: bool = True) -> None:
-    """Rzuca IntegrityError, jesli cokolwiek sie nie zgadza.
+    """Raise IntegrityError if anything does not add up.
 
-    deep=False pomija ponowne liczenie SHA-256 calego pliku (uzywane tam, gdzie
-    tresc pliku i tak nie jest wydawana - np. na listingu katalogu).
+    deep=False skips re-hashing the whole file. Used where the content is not
+    being served anyway — issuing a download link, listing a catalogue page.
     """
     if file_row["status"] == "quarantined":
-        raise IntegrityError("plik jest w kwarantannie po nieudanej weryfikacji")
+        raise IntegrityError("integrity.quarantined")
     if file_row["status"] != "signed":
-        raise IntegrityError("plik nie ma jeszcze zlozonego podpisu")
+        raise IntegrityError("integrity.unsigned")
 
     manifest = parse_manifest(file_row)
     if manifest is None:
-        raise IntegrityError("brak manifestu albo manifest jest uszkodzony")
+        raise IntegrityError("integrity.manifest_missing")
 
     if manifest.get("schema") != security.MANIFEST_SCHEMA:
-        raise IntegrityError("nieznana wersja manifestu")
+        raise IntegrityError("integrity.schema_unknown")
 
-    # Manifest kontra rekord w bazie. Rozjazd oznacza, ze ktos ruszal baze.
+    # Manifest against the database row. A divergence means someone edited the
+    # database.
     if (
         manifest.get("sha256") != file_row["sha256"]
         or manifest.get("filename") != file_row["filename"]
         or int(manifest.get("size", -1)) != int(file_row["size"])
     ):
-        raise IntegrityError("podpisany manifest nie zgadza sie z wpisem w katalogu")
+        raise IntegrityError("integrity.catalog_mismatch")
 
     public = security.load_public_key()
     if public is None:
-        raise IntegrityError("serwer nie ma skonfigurowanego klucza publicznego")
+        raise IntegrityError("integrity.no_public_key")
 
     if manifest.get("key_id") != security.key_id(security.public_key_hex()):
-        raise IntegrityError("manifest podpisany innym kluczem niz aktualny")
+        raise IntegrityError("integrity.key_mismatch")
 
     if not file_row.get("signature"):
-        raise IntegrityError("brak podpisu")
+        raise IntegrityError("integrity.signature_missing")
 
     if not security.verify_manifest(manifest, file_row["signature"], public):
-        raise IntegrityError("podpis Ed25519 jest nieprawidlowy")
+        raise IntegrityError("integrity.signature_invalid")
 
     if deep:
-        ok, problem = storage.verify_stored_file(
-            file_row["storage_path"], manifest["sha256"]
-        )
+        ok, problem = storage.verify_stored_file(file_row["storage_path"], manifest["sha256"])
         if not ok:
-            raise IntegrityError("plik na dysku nie zgadza sie z podpisem: {}".format(problem))
+            key, params = problem
+            raise IntegrityError("integrity.disk_mismatch", reason=messages.t(key, None, **params))
 
 
 def quarantine(file_id: int, reason: str) -> None:
     db.execute("UPDATE files SET status = 'quarantined' WHERE id = ?", (file_id,))
-    db.audit("file.quarantined", None, "file_id={} powod={}".format(file_id, reason))
+    db.audit("file.quarantined", None, "file_id={} reason={}".format(file_id, reason))
 
 
 def guard_download(file_row: Dict[str, Any]) -> None:
-    """check_file z automatyczna kwarantanna, gdy weryfikacja padnie."""
+    """check_file, quarantining the file automatically when the check fails."""
     try:
         check_file(file_row, deep=True)
     except IntegrityError as exc:
         if file_row["status"] != "quarantined":
-            quarantine(file_row["id"], exc.reason)
+            quarantine(file_row["id"], exc.reason("en"))
         raise
 
 
 def sign_file_row(file_row: Dict[str, Any], model_slug: str) -> Tuple[bool, str]:
-    """Podpisuje plik kluczem prywatnym z konfiguracji (tryb online).
+    """Sign a file with the private key from the configuration (online mode).
 
-    Zwraca (czy_podpisano, komunikat).
+    Returns (signed, note). The note is internal, English only.
     """
     private = security.load_private_key()
     if private is None:
-        return False, "brak klucza prywatnego na serwerze (tryb offline)"
+        return False, "no private key on the server (offline mode)"
 
     public_hex = private.public_key().public_bytes_raw().hex()
     if config.SIGNING_PUBLIC_KEY_HEX and config.SIGNING_PUBLIC_KEY_HEX != public_hex:
-        return False, "klucz prywatny nie pasuje do skonfigurowanego klucza publicznego"
+        return False, "the private key does not match the configured public key"
 
     manifest = security.build_manifest(
         model_slug=model_slug,
@@ -133,17 +141,17 @@ def sign_file_row(file_row: Dict[str, Any], model_slug: str) -> Tuple[bool, str]
             file_row["id"],
         ),
     )
-    return True, "podpisano"
+    return True, "signed"
 
 
 def sidecar(file_row: Dict[str, Any]) -> Dict[str, Any]:
-    """Dokument .sig.json wydawany razem z plikiem - pozwala zweryfikowac
-    pobrany plik offline, bez zaufania do serwera."""
+    """The .sig.json document handed out alongside a file, so the download can
+    be verified offline without trusting this server."""
     return {
         "manifest": parse_manifest(file_row),
         "signature": file_row.get("signature"),
         "algorithm": "Ed25519",
         "public_key": security.public_key_hex(),
         "key_id": file_row.get("key_id"),
-        "how_to_verify": "python3 tools/verify_stl.py <plik.stl> <plik.stl.sig.json>",
+        "how_to_verify": "python3 tools/verify_stl.py <file.stl> <file.stl.sig.json>",
     }
