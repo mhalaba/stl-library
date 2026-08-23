@@ -238,3 +238,13 @@ tools/
   seed_demo.py    przykładowe modele
 tests/e2e.py    testy end-to-end, w tym symulacja podmiany plików
 ```
+
+---
+
+## Licencja
+
+[MIT](LICENSE). Rób z tym, co chcesz — zachowaj tylko notę o prawach autorskich.
+
+Uwaga na dwie różne licencje w tym projekcie: MIT dotyczy **kodu serwisu**.
+Licencja modeli STL to osobne pole przy każdym modelu w katalogu (domyślnie
+`CC BY-NC 4.0`) i nie ma z MIT nic wspólnego.
