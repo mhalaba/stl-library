@@ -15,6 +15,12 @@ file — it is three [independent layers](#why-a-token-alone-is-not-enough), the
 most important of which is an Ed25519 signature made with a key kept **off the
 server**.
 
+Companion: **[HART](https://github.com/mhalaba/hart)** — a local-first STL vault
+that never uploads the mesh. Same canonical Ed25519 sidecar (`*.stl.sig.json`),
+plus a sabotage scanner (cavities, 3MF polyglots, triangle bombs, XSS in
+`solid`). Sidecars from this library verify in HART; sidecars from HART verify
+with `tools/verify_stl.py`. MIT · [Halaba.online](https://halaba.online).
+
 ### What it does
 
 - Catalogue of models with search, categories and licences.
